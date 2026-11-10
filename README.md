@@ -8,14 +8,14 @@ An experimental Windows mod for two players on one PC.
 
 ## Install from the ZIP on Windows
 
-This preview supports the Steam x64 build **1.512.105**.
+Use the Windows version of Oblivion Remastered from Steam. The installer checks compatibility before copying files.
 
 1. Close Oblivion Remastered and [download the Windows ZIP](https://jldx-1.github.io/oblivion-remastered-splitscreen-mod/docs/download/LocalSplitScreen-Windows.zip).
 2. In File Explorer, right-click the ZIP and select **Extract All**. Open the extracted folder. It should contain **Install.ps1** and a **payload** folder. Keep them together. The installer uses the payload to place the loader and mod files in the game's `OblivionRemastered\Binaries\Win64` folder.
 3. Open **Windows PowerShell** as administrator. In File Explorer, copy the path of the extracted folder from the address bar. Paste it into the first command below, replacing the example path, then run both commands.
 
    ```powershell
-   Set-Location -LiteralPath "C:\Users\YourName\Downloads\LocalSplitScreen-Windows"
+   Set-Location -LiteralPath "<paste the extracted folder path here>"
    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\Install.ps1
    ```
 
@@ -23,7 +23,7 @@ This preview supports the Steam x64 build **1.512.105**.
 4. If a folder picker opens, select the top-level **Oblivion Remastered** installation folder. To find it in Steam, right-click the game and choose **Manage → Browse local files**. You can also pass the folder explicitly with `-GameDirectory`.
 
    ```powershell
-   powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\Install.ps1 -GameDirectory "D:\SteamLibrary\steamapps\common\Oblivion Remastered"
+   powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\Install.ps1 -GameDirectory "<paste the Steam game folder path here>"
    ```
 
 5. After PowerShell prints **Installed Local Split Screen**, launch the game from Steam and load a spare save. With both controllers connected, open **System → Save & Load → Split Screen**. Choose a layout and press **Options** on Player 2’s controller to start.
