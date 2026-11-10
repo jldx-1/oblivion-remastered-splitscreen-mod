@@ -26,8 +26,8 @@ function FirstPerson.new()
 end
 function FirstPerson:destroy()
     self.view:destroy()
-    self.offset,self.weapon=nil,nil
-    self.next_sync=nil
+    self.grip_reference,self.weapon=nil,nil
+    self.next_sync,self.last_update,self.anchor_weight=nil,nil,nil
 end
 function FirstPerson:sync_equipment(actor,weapon)
     local view=self.view
@@ -54,14 +54,15 @@ function FirstPerson:update(host,actor,camera,now)
     if not valid(pairing) or not actor:IsWeaponDrawn() then self:destroy(); return end
     local weapon=pairing:GetEquippedWeaponActor()
     if not valid(weapon) then self:destroy(); return end
-    if not same(self.weapon,weapon) and actor.StateMachineComponent:GetActionState():ToString()~="Idle" then
+    local idle=actor.StateMachineComponent:GetActionState():ToString()=="Idle"
+    if not same(self.weapon,weapon) and not idle then
         self:destroy()
         return
     end
     local view=self.view
     if not view:ensure(host,camera:GetTransform()) then self:destroy(); return end
     if not self.next_sync or now>=self.next_sync or not same(self.weapon,weapon) then
-        if not same(self.weapon,weapon) then self.offset=nil end
+        if not same(self.weapon,weapon) then self.grip_reference=nil end
         self.weapon=weapon
         self.next_sync=now+200
         self:sync_equipment(actor,weapon)
@@ -69,19 +70,29 @@ function FirstPerson:update(host,actor,camera,now)
     local equipped=view.meshes.weapon
     if not equipped or not valid(equipped.source) then self:destroy(); return end
     local actor_transform=actor:GetTransform()
-    if not self.offset then
-        local grip=self.math:MakeRelativeTransform(equipped.source:K2_GetComponentToWorld(),actor_transform).Translation
-        -- Rotate the character pose around the grip into the view and keep
-        -- the wrist near the lower right. The live animation drives swings.
-        local forward,side,down=55,22,-22
-        self.offset={X=cosine*forward+sine*down-grip.X,Y=side-grip.Y,Z=-sine*forward+cosine*down-grip.Z}
-    end
-    local offset=self.offset
+    local weapon_pose=self.math:MakeRelativeTransform(equipped.source:K2_GetComponentToWorld(),actor_transform)
+    local grip=weapon_pose.Translation
+    if not self.grip_reference then self.grip_reference={X=grip.X,Y=grip.Y,Z=grip.Z} end
+    -- Keep locomotion bob small in the first-person view. Fade back to the
+    -- full character pose for swings, blocks, and other weapon actions.
+    local weight=idle and 0.8 or 0
+    local blend=math.min(1,(now-(self.last_update or now))/90)
+    local previous=self.anchor_weight or weight
+    self.anchor_weight=previous+(weight-previous)*blend
+    self.last_update=now
+    local reference,anchor=self.grip_reference,self.anchor_weight
+    local forward,side,down=55,22,-26
+    local offset={
+        X=cosine*forward+sine*down-reference.X-(grip.X-reference.X)*anchor,
+        Y=side-reference.Y-(grip.Y-reference.Y)*anchor,
+        Z=-sine*forward+cosine*down-reference.Z-(grip.Z-reference.Z)*anchor,
+    }
     local rotation=self.math:ComposeRotators({Pitch=grip_pitch,Yaw=0,Roll=0},camera:K2_GetActorRotation())
     view.actor:K2_SetActorLocationAndRotation(camera:K2_GetActorLocation(),rotation,false,{},true)
     for _,mesh in pairs(view.meshes) do
         if valid(mesh.source) and valid(mesh.copy) then
-            local pose=self.math:MakeRelativeTransform(mesh.source:K2_GetComponentToWorld(),actor_transform)
+            local pose=mesh==equipped and weapon_pose
+                or self.math:MakeRelativeTransform(mesh.source:K2_GetComponentToWorld(),actor_transform)
             local p=pose.Translation
             pose.Translation={X=p.X+offset.X,Y=p.Y+offset.Y,Z=p.Z+offset.Z}
             mesh.copy:K2_SetRelativeTransform(pose,false,{},true)
