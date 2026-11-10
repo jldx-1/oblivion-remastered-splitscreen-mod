@@ -11,6 +11,10 @@ end
 
 function Preload.begin(adapter,source,source_actor,link,background)
     local fixture=Fixtures.match(source,link)
+    if not fixture and background and adapter.experimental_door_travel
+        and link.target_cell and link.target_cell.interior then
+        fixture=require("lib.background_cell").describe(link.destination_cell,source,link.destination_ref)
+    end
     if not fixture or source~=fixture.entrance or not link.target_cell or link.target_cell.state~=0
         or adapter.experimental_door_preload then return end
     local save_id=adapter:save_id()
@@ -23,6 +27,8 @@ function Preload.begin(adapter,source,source_actor,link,background)
         local cells=require("lib.background_cell")
         pending.stream=cells.stream(adapter:host().Pawn,fixture)
         if not pending.stream then return end
+        adapter.area_streams=adapter.area_streams or {}
+        adapter.area_streams[fixture.cell]={fixture=fixture,stream=pending.stream}
     else
         pending.token={host=adapter:host().Pawn:GetAddress(),save_id=save_id,deadline=now+4000,
             movement=Movement.capture(adapter)}
@@ -90,7 +96,10 @@ function Preload.poll(adapter,now)
                 adapter.door_preload_status.host_settings=token.movement.host.restored
                 adapter.door_preload_status.guest_settings=token.movement.guest.restored
             end
-            if cross then require("lib.door_travel").begin(adapter,fixture.entrance,state.cell_ref,door) end
+            if cross then
+                require("lib.door_travel").begin(adapter,fixture.entrance,state.cell_ref,door,
+                    state.guest_sewer_transfer,state.guest_attached_transfer)
+            end
             return
         end
     end

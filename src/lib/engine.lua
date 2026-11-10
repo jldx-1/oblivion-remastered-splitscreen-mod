@@ -90,7 +90,7 @@ function Engine:has_inventory_backend()
     return self.inventory_backend
 end
 local backend_op={LSSDoor="d",LSSPrepareCellFixture="h",LSSDialogue="t",LSSBlockDeathLoad="b",
-    LSSActorPosition="p",LSSInventory="i"}
+    LSSActorPosition="p",LSSInventory="i",LSSCrossDoor="c",LSSCompass="m"}
 local function plugin_command(command)
     local name,args=command:match("^(LSS%a+)%s+(.+)$")
     local ref
@@ -101,7 +101,7 @@ local function plugin_command(command)
     end
     local op=backend_op[name]
     if not op then return command end
-    if (op=="p" or op=="i") and not ref then return nil end
+    if (op=="p" or op=="i" or op=="m") and not ref then return nil end
     local packet={"LSS2",op}
     if ref then packet[#packet+1]=("%u"):format(ref) end
     for arg in args:gmatch("%S+") do
@@ -252,7 +252,7 @@ function Engine:join(slot,race)
             self.log("Player 2 kept in the original area while the host travelled.")
             return true
         end
-        if saved and self.experimental_saved_area then
+        if saved and (self.experimental_saved_area or self.saved_area_supported) then
             return require("lib.saved_area").begin(self,wanted_ref,save_id)
         end
         return false,"The saved companion is not loaded. Return to the area where you saved."
@@ -364,7 +364,7 @@ function Engine:finish_join()
     self:command(ref..".setav aggression 0")
     self.pc:Possess(self.actor)
     assert(self.pc.Pawn:GetAddress()==self.actor:GetAddress(),"Companion possession failed")
-    if self.experimental_saved_area then
+    if self.experimental_saved_area or self.guest_torch_supported then
         self.guest_torch_controlled=self.native.control_guest_torch(tonumber(ref,16))
     end
     -- The paired state machine otherwise replaces local action states with
@@ -591,6 +591,7 @@ function Engine:has_guest_dialogue()
     if raw then
         local reply=json.decode(raw)
         self.guest_dialogue_available=reply.request==capability.request and reply.guest_read_only==true
+        self.guest_dialogue_catalog=self.guest_dialogue_available and reply.topic_catalog==true
     elseif now>=capability.deadline then self.guest_dialogue_available=false end
     return self.guest_dialogue_available
 end
@@ -640,6 +641,7 @@ function Engine:poll_guest_door()
     local snapshot=raw and json.decode(raw)
     if not snapshot or snapshot.request~=pending.request or snapshot.actor_ref~=pending.ref then return end
     self.guest_door=nil
+    DoorFixtures.remember(self,pending.ref,snapshot)
     local target,source_actor=self:guest_door_target()
     if target~=pending.ref then return end
     local door=snapshot.door
@@ -662,9 +664,9 @@ function Engine:poll_guest_door()
         if self.experimental_door_travel or hotel then
             if door.destination_paired and door.target_cell.attached then
                 require("lib.door_travel").begin(self,pending.ref,snapshot.cell_ref,door,
-                    snapshot.guest_sewer_transfer,not hotel and snapshot.guest_attached_transfer)
+                    snapshot.guest_sewer_transfer,snapshot.guest_attached_transfer)
             else
-                require("lib.door_preload").begin(self,pending.ref,source_actor,door,hotel)
+                require("lib.door_preload").begin(self,pending.ref,source_actor,door,hotel or snapshot.guest_attached_transfer)
             end
         end
         if not self.guest_crossing and not self.door_preload then
@@ -1165,13 +1167,21 @@ local revive_window=30000
 local revive_hold_time=10000
 
 function Engine:poll_hotel_life(now)
-    if not self.hotel_guest_travel or self.guest_crossing or self.door_preload
+    if not (self.hotel_guest_travel or self.experimental_door_travel) or self.guest_crossing or self.door_preload
         or not self.native.backend_actor_position then return end
     local id=tonumber(self.actor_ref,16)
     if not id then return end
     local raw=self.native.backend_actor_position(id)
     local snapshot=raw and json.decode(raw)
-    if snapshot and snapshot.request==self.hotel_life_request then self.hotel_life=snapshot end
+    if snapshot and snapshot.request==self.hotel_life_request then
+        self.hotel_life=snapshot
+        if snapshot.doors and self.area_streams and self.area_streams[snapshot.cell_ref] then
+            self.streamed_doors=self.streamed_doors or {}
+            for _,door in ipairs(snapshot.doors) do
+                if door.guid then self.streamed_doors[door.ref]={guid=door.guid,cell=snapshot.cell_ref} end
+            end
+        end
+    end
     if now>=(self.hotel_life_next or 0) then
         self.hotel_life_request=650000000+now%100000000
         self.hotel_life_next=now+250
@@ -1288,12 +1298,10 @@ function Engine:input_guest_recovery(buttons)
         end
     elseif dead then
         local expired=self.guest_revive_until and now>=self.guest_revive_until
-        if expired then self.guest_revive_until=nil end
         if (expired and not (self.revive_hold and self.revive_hold.by==1))
             or buttons & 4096~=0 and (self.last_buttons or 0) & 4096==0 then
             self:request_guest_recovery(true)
         end
-        if expired and self.revive_hold and self.revive_hold.by==1 then self.guest_revive_until=now end
     end
     if not dead and not self.guest_recovery then
         self.guest_downed,self.guest_revive_until=nil,nil
@@ -1370,18 +1378,25 @@ function Engine:input_host_recovery(host,buttons)
         end
     elseif dead then
         local expired=self.host_revive_until and now>=self.host_revive_until
-        if expired then self.host_revive_until=nil end
         if (expired and not (self.revive_hold and self.revive_hold.by==2))
             or buttons & 4096~=0 and (self.host_buttons or 0) & 4096==0 then
             self:request_host_recovery(true)
         end
-        if expired and self.revive_hold and self.revive_hold.by==2 then self.host_revive_until=now end
     elseif values:GetFloatModifiedActorValue(8)>0 then
         self.host_downed,self.host_revive_until=nil,nil
         self.next_death_load_block=nil
     end
     self.host_buttons=buttons
     return true
+end
+
+function Engine:recover_without_input()
+    if self.loading then return end
+    local host=self:host()
+    if not valid(host) or not paired(host.Pawn) then return end
+    self.revive_hold=nil
+    self:input_host_recovery(host,0)
+    if paired(self.actor) then self:input_guest_recovery(0) end
 end
 
 function Engine:input_revive(player,buttons)

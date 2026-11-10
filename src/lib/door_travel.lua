@@ -11,7 +11,8 @@ local function move(pending,target,offset)
     end
     if pending.attached_transfer then
         local source=target==pending.source and pending.link.destination_ref or pending.source
-        return ("LSSPrepareCellFixture %d 13 %d %d"):format(source,guest,target)
+        return ("LSSCrossDoor %d %d %d %d"):format(guest,source,target,
+            target==pending.link.destination_ref and (pending.landing or 0) or 0)
     end
     return ("%s.moveto %08X %.6f %.6f %.6f"):format(pending.actor,target,offset[1],offset[2],offset[3])
 end
@@ -67,18 +68,20 @@ function Travel.begin(adapter,source,source_cell,link,guest_sewer_transfer,guest
     local half=adapter.actor.CapsuleComponent:GetScaledCapsuleHalfHeight()
     local door_position,door_rotation=destination:K2_GetActorLocation(),destination:K2_GetActorRotation()
     local position,rotation=Arrival.resolve(link,door_position,door_rotation,half)
-    if recovery and position and not clear_of_host(adapter,position) then
+    local landing
+    if position and not clear_of_host(adapter,position) then
         local original_offset,original_arrival=link.arrival_offset,link.arrival
         local trace=StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
         local clear={R=0,G=0,B=0,A=0}
         local host=adapter:host().Pawn
         local start=position
-        for _,offset in ipairs({{90,0},{-90,0},{0,90},{0,-90}}) do
+        for index,offset in ipairs({{90,0},{-90,0},{0,90},{0,-90}}) do
             link.arrival_offset={original_offset[1]+offset[1],original_offset[2]+offset[2],original_offset[3]}
             link.arrival={original_arrival[1]+offset[1],original_arrival[2]+offset[2],original_arrival[3]}
             position,rotation=Arrival.resolve(link,door_position,door_rotation,half)
             if position and clear_of_host(adapter,position)
                 and not trace:SphereTraceSingle(host,start,position,40,0,false,{host,adapter.actor},0,{},true,clear,clear,0) then
+                landing=index
                 break
             end
             position=nil
@@ -89,7 +92,7 @@ function Travel.begin(adapter,source,source_cell,link,guest_sewer_transfer,guest
     local now=adapter.native.clock_ms()
     local pending={actor=adapter.actor_ref,source=source,source_cell=source_cell,link=link,
         position=position,rotation=rotation,request=800000000+now%100000000,deadline=now+650,
-        sewer_transfer=sewer,attached_transfer=attached,native_membership=sewer or attached,recovery=recovery}
+        sewer_transfer=sewer,attached_transfer=attached,native_membership=sewer or attached,recovery=recovery,landing=landing}
     adapter.guest_crossing=pending
     adapter:command(query(pending))
     return pending

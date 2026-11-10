@@ -159,6 +159,12 @@ static int backend_protocol(lua_State *L) {
     lua_pushinteger(L,module_protocol(backend_module()));
     return 1;
 }
+static int backend_features(lua_State *L) {
+    HMODULE module=backend_module();
+    backend_version_fn features=module ? (backend_version_fn)GetProcAddress(module,"LSS_BackendFeatures") : NULL;
+    lua_pushinteger(L,features ? features() : 0);
+    return 1;
+}
 static int backend_snapshot(lua_State *L,const char *export_name,const char *unavailable) {
     typedef size_t (__cdecl *copy_fn)(unsigned int,char*,size_t);
     HMODULE module=backend_module();
@@ -185,6 +191,9 @@ static int backend_actor_position(lua_State *L) {
 }
 static int backend_dialogue(lua_State *L) {
     return backend_snapshot(L,"LSS_CopyDialogueJSON","Native dialogue backend is not loaded");
+}
+static int backend_compass(lua_State *L) {
+    return backend_snapshot(L,"LSS_CopyCompassJSON","Native compass backend is not loaded");
 }
 static int transform_hold(lua_State *L) {
     typedef bool (*hold_fn)(uintptr_t,bool);
@@ -286,7 +295,9 @@ __declspec(dllexport) int luaopen_lss_native(lua_State *L) {
         {"poll", poll}, {"clock_ms", clock_ms}, {"focused", focused},
         {"key_down", key_down}, {"atomic_write", atomic_write}, {"profile_directory",profile_directory},
         {"backend_protocol",backend_protocol}, {"backend_inventory",backend_inventory},
+        {"backend_features",backend_features},
         {"backend_door",backend_door}, {"backend_actor_position",backend_actor_position}, {"backend_dialogue",backend_dialogue},
+        {"backend_compass",backend_compass},
         {"activation_target_address",activation_target_address},
         {"transform_hold",transform_hold}, {"suppressed_transforms",suppressed_transforms},
         {"check_transform_landing",check_transform_landing}, {"transform_landing_counts",transform_landing_counts},

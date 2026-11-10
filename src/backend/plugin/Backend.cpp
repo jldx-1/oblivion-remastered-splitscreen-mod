@@ -1,4 +1,5 @@
 #include <Windows.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <charconv>
@@ -9,6 +10,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string_view>
 #include "PluginAPI.h"
@@ -18,12 +20,13 @@ using U = std::uint32_t;
 using P = void*;
 using Addr = std::uintptr_t;
 constexpr U runtime = 0x12000690;
-constexpr U hotel = 0x2AEEA;
+constexpr U feature_compass=1, feature_topic_catalog=2, feature_saved_area=4, feature_guest_torch=8;
 constexpr Addr console_entry = 0x08FC21F0, console_original = 0x06A0C2B0;
 constexpr Addr form_rtti = 0x08FE4BC8;
 Addr image;
 bool ready;
 std::atomic<U> skipped_actor_candidates{0};
+std::atomic<U> controlled_torch_actor{0};
 
 template<class T> T game(Addr rva) { return reinterpret_cast<T>(image+rva); }
 template<class T> T get(const void* object, size_t offset) {
@@ -54,6 +57,11 @@ bool block_stock_death_load() {
     // The game's own pairing handler cancels the armed reload timer.
     game<void(*)()>(0x0656DC90)();
     return true;
+}
+void evaluate_torch(P actor) {
+    const U local=controlled_torch_actor.load(std::memory_order_relaxed);
+    if(local && actor && id(actor)==local) return;
+    game<void(*)(P)>(0x065CFA40)(actor);
 }
 bool scanned_actor_dead(P actor,bool include_unconscious) {
     using Predicate=bool(*)(P,bool);
@@ -107,7 +115,7 @@ P extra(P list,unsigned kind) {
     return nullptr;
 }
 using Records=std::map<U,std::string>;
-Records positions,doors,dialogues,inventories;
+Records positions,doors,dialogues,inventories,compasses;
 std::mutex records_mutex;
 bool save(Records& records,U key,const std::ostringstream& json) {
     std::lock_guard lock(records_mutex);
@@ -127,6 +135,7 @@ void header(std::ostream& out,U ref,U request) {
     out << std::setprecision(std::numeric_limits<float>::max_digits10)
         << "{\"schema\":1,\"actor_ref\":" << ref << ",\"request\":" << request;
 }
+void actor_guid(std::ostream& out,const char* key,P ref);
 bool actor_position(U ref,U request) {
     P actor=find(ref);
     if(type(actor)!=0x32) return false;
@@ -140,8 +149,32 @@ bool actor_position(U ref,U request) {
         << ",\"actor_has_pairing_entry\":" << yes(get<P>(actor,0x48)!=nullptr) << ",\"cell\":";
     cell_state(out,area);
     point(out,"native_position",position(actor));
+    if(attached(area) && interior(area)) {
+        out << ",\"doors\":[";
+        unsigned remaining=8192,emitted=0;
+        ExtraLock lock;
+        for(P node=static_cast<char*>(area)+0xB8; node && remaining-- && emitted<128; node=get<P>(node,8)) {
+            P door_ref=get<P>(node,0);
+            if(type(door_ref)!=0x31 || type(base_form(door_ref))!=0x18) continue;
+            if(emitted++) out << ',';
+            out << "{\"ref\":" << id(door_ref);
+            actor_guid(out,"guid",door_ref);
+            out << '}';
+        }
+        out << ']';
+    }
     out << '}';
     return save(positions,ref,out);
+}
+void actor_guid(std::ostream& out,const char* key,P ref) {
+    P guid=extra(extra_list(ref),0x5E);
+    if(!guid) return;
+    out << ",\"" << key << "\":[";
+    for(size_t i=0;i<4;++i) {
+        if(i) out << ',';
+        out << get<std::int32_t>(guid,0x18+i*4);
+    }
+    out << ']';
 }
 bool door(U ref,U request) {
     P actor=find(ref);
@@ -152,6 +185,7 @@ bool door(U ref,U request) {
         out << ",\"error\":\"" << (actor ? "not_a_door" : "reference_unavailable") << "\"}";
         return save(doors,ref,out);
     }
+    out << ",\"guest_attached_transfer\":true";
     if(ref==0x2C3AC || ref==0x2B092) out << ",\"guest_hotel_travel\":true";
     ExtraLock lock;
     P list=extra_list(actor);
@@ -169,6 +203,8 @@ bool door(U ref,U request) {
     cell_state(out,source);
     out << ",\"target_cell\":";
     cell_state(out,dest);
+    actor_guid(out,"source_guid",actor);
+    actor_guid(out,"destination_guid",target);
     if(target) {
         const auto arrival=get<Vec>(data,8);
         point(out,"source_position",position(actor));
@@ -182,44 +218,84 @@ bool door(U ref,U request) {
 }
 
 using CellCallback=void(*)(P,bool,bool,const void*,const void*,const void*,U);
-thread_local bool preparing_hotel, skipped_hotel_reload;
+thread_local U preparing_cell;
+thread_local bool skipped_cell_reload;
 void keep_world(P,bool,bool,const void*,const void*,const void*,U) {}
 void queue_cell(P queue,P pairing,U frame,const char* name,CellCallback callback,
                 bool seamless,bool fade,const void* level,const void* world,const void* name2,U area) {
-    if (preparing_hotel && area==hotel && !seamless && !fade && callback==game<CellCallback>(0x04704980)) {
+    if (preparing_cell && area==preparing_cell && !seamless && !fade && callback==game<CellCallback>(0x04704980)) {
         callback=keep_world;
-        skipped_hotel_reload=true;
+        skipped_cell_reload=true;
     }
     game<decltype(&queue_cell)>(0x06654230)(queue,pairing,frame,name,callback,seamless,fade,level,world,name2,area);
 }
 bool prepare(U area,U step) {
-    if (area!=hotel || (step!=2 && step!=3)) return false;
+    if (step!=2 && step!=3) return false;
     P host=find(0x14);
     if(type(host)!=0x32) return false;
-    P outside=cell(host);
-    if(state(outside)!=6 || (id(outside)!=114110 && id(outside)!=114111)) return false;
+    P primary=cell(host);
+    if(state(primary)!=6) return false;
     P target=find(area);
-    if(type(target)!=0x30 || !interior(target)) return false;
+    if(type(target)!=0x30 || target==primary || !interior(target)) return false;
     const auto current=state(target);
     const auto root=get<P>(target,0xD0);
     const auto paired_cell=get<bool>(target,0x50);
     if(step==2 && !current && !root && !paired_cell) {
-        skipped_hotel_reload=false;
-        preparing_hotel=true;
+        skipped_cell_reload=false;
+        preparing_cell=area;
         const auto result=game<P(*)(P)>(0x0665DF10)(target);
-        preparing_hotel=false;
-        return result && result==get<P>(target,0xD0) && state(target)==3 && skipped_hotel_reload;
+        preparing_cell=0;
+        return result && result==get<P>(target,0xD0) && state(target)==3 && skipped_cell_reload;
     }
     if(step==3 && current==3 && root && paired_cell) {
         const auto manager=get<P>(game<P>(0x0941F748),0);
         const auto parent=get<P>(manager,0x10);
-        if(!parent || get<P>(manager,0x50)) return false;
+        const auto active=get<P>(manager,0x50);
+        if(!parent || (active && active!=primary)) return false;
         game<void(*)(P,P)>(0x06657540)(target,parent);
         if(state(target)!=5) return false;
         game<void(*)(P,unsigned char)>(0x066564D0)(target,1);
         return state(target)==6;
     }
     return false;
+}
+
+bool cross_door(U guest_id,U source_id,U target_id,U landing=0) {
+    if((guest_id>>24)!=0xFF || source_id==target_id || landing>4) return false;
+    P guest=find(guest_id), source=find(source_id), target=find(target_id);
+    if(type(guest)!=0x32 || dead(guest) || type(source)!=0x31 || type(target)!=0x31) return false;
+    P origin=cell(guest), from=cell(source), to=cell(target);
+    if(!attached(origin) || !attached(from) || !attached(to)
+        || !paired(guest) || !get<P>(guest,0x48) || !paired(source) || !paired(target)) return false;
+    if(origin!=from && (interior(origin) || interior(from)
+        || !get<P>(origin,0xC8) || get<P>(origin,0xC8)!=get<P>(from,0xC8))) return false;
+    const auto delta=difference(position(guest),position(source));
+    if(delta.x*delta.x+delta.y*delta.y+delta.z*delta.z>400.0f*400.0f) return false;
+    Vec arrival{}, rotation{};
+    {
+        ExtraLock lock;
+        for(P door_ref:{source,target}) {
+            P base=base_form(door_ref);
+            if(type(base)!=0x18 || get<P>(as(base,0x08FE50A0),8)
+                || extra(extra_list(door_ref),0x31) || extra(extra_list(door_ref),0x12)
+                || extra(extra_list(door_ref),0x43)) return false;
+        }
+        P data=get<P>(as(extra(extra_list(source),0x32),0x08FE5150,0x08FE5128),0x18);
+        if(get<P>(data,0)!=target) return false;
+        arrival=get<Vec>(data,8);
+        rotation=get<Vec>(data,0x14);
+    }
+    if(!std::isfinite(arrival.x) || !std::isfinite(arrival.y) || !std::isfinite(arrival.z)
+        || !std::isfinite(rotation.x) || !std::isfinite(rotation.y) || !std::isfinite(rotation.z)) return false;
+    // Lua checks collision before selecting one of these bounded alternatives.
+    if(landing==1) arrival.x+=90;
+    else if(landing==2) arrival.x-=90;
+    else if(landing==3) arrival.y+=90;
+    else if(landing==4) arrival.y-=90;
+    game<void(*)(P,const Vec*)>(0x0658C620)(guest,&arrival);
+    game<void(*)(P,const Vec*)>(0x0658BE30)(guest,&rotation);
+    game<void(*)(P,P,P)>(0x06585530)(guest,to,interior(to) ? nullptr : get<P>(to,0xC8));
+    return cell(guest)==to;
 }
 
 struct Landing { double x,y,z; };
@@ -253,6 +329,19 @@ bool guest_in_range(P speaker,P listener) {
     const auto d=difference(position(speaker),position(listener));
     return d.x*d.x+d.y*d.y+d.z*d.z<=320.0f*320.0f;
 }
+bool known_topic(U topic_id) {
+    if(topic_id==0xC8 || topic_id==0xD4) return true;
+    P player=find(0x14);
+    if(type(player)!=0x32) return false;
+    unsigned remaining=8192;
+    for(P node=static_cast<char*>(player)+0x890;node && remaining--;node=get<P>(node,8)) {
+        P topic=get<P>(node,0);
+        if(type(topic)==0x39 && id(topic)==topic_id) return true;
+    }
+    return false;
+}
+void quoted(std::ostream& out,std::string_view value);
+std::string_view component_string(P component);
 U current_speaker() {
     P tile=game<P(*)(U)>(0x066F1F80)(0x3F1);
     P menu=tile ? game<P(*)(P)>(0x066F1F30)(tile) : nullptr;
@@ -264,16 +353,38 @@ bool dialogue(U request,U speaker_id,U listener_id,U topic_id,bool scoped) {
     std::ostringstream out;
     out << "{\"schema\":1,\"request\":" << request << ",\"speaker_ref\":" << (scoped ? speaker_id : current_speaker());
     if(!scoped) {
-        out << ",\"guest_read_only\":true}";
+        out << ",\"guest_read_only\":true,\"topic_catalog\":true}";
         return save(dialogues,request,out);
     }
-    if(speaker_id==0x14 || speaker_id==listener_id || (listener_id>>24)!=0xFF
-        || (topic_id!=0xC8 && topic_id!=0x1FDA6 && topic_id!=0xD7 && topic_id!=0xD4)) return false;
+    if(speaker_id==0x14 || speaker_id==listener_id || (listener_id!=0x14 && (listener_id>>24)!=0xFF)) return false;
     P speaker=find(speaker_id), listener=find(listener_id), topic=find(topic_id);
     const auto valid=[](P actor) { return type(actor)==0x32 && cell(actor) && paired(actor) && get<P>(actor,0x48); };
-    if(!valid(speaker) || !valid(listener) || type(topic)!=0x39 || (get<U>(topic,0xC)&0x20)) return false;
+    if(!valid(speaker) || !valid(listener)) return false;
+    if(!topic_id) {
+        out << ",\"listener_ref\":" << listener_id << ",\"topic_ref\":0,\"topics\":[";
+        std::set<U> topics{0xC8,0xD4};
+        P player=find(0x14);
+        unsigned remaining=8192;
+        for(P node=player ? static_cast<char*>(player)+0x890 : nullptr;node && remaining--;node=get<P>(node,8)) {
+            P item=get<P>(node,0);
+            if(type(item)==0x39 && !(get<U>(item,0xC)&0x20)) topics.insert(id(item));
+        }
+        bool first=true;
+        if(guest_in_range(speaker,listener)) for(U value:topics) {
+            P item=find(value);
+            if(type(item)!=0x39) continue;
+            if(!first) out << ',';
+            first=false;
+            out << "{\"ref\":" << value << ",\"name\":";
+            quoted(out,component_string(as(item,0x08FE4D40)));
+            out << '}';
+        }
+        out << "]}";
+        return save(dialogues,request,out);
+    }
+    if(type(topic)!=0x39 || (get<U>(topic,0xC)&0x20)) return false;
     out << ",\"listener_ref\":" << listener_id << ",\"topic_ref\":" << topic_id << ",\"choices\":[";
-    if(guest_in_range(speaker,listener)) {
+    if(known_topic(topic_id) && guest_in_range(speaker,listener)) {
         unsigned emitted=0, visited=0;
         for(P node=static_cast<char*>(topic)+0x50; node && visited++<128 && emitted<64; node=get<P>(node,8)) {
             P entry=get<P>(node,0), quest=get<P>(entry,0);
@@ -310,6 +421,94 @@ std::string_view component_string(P component) {
 void icon(std::ostream& out,P component) {
     const auto name=component_string(component);
     if(!name.empty()) { out << ",\"icon_path\":"; quoted(out,name); }
+}
+std::set<U> map_markers;
+P catalog_buckets;
+U catalog_bucket,catalog_size;
+bool index_map_markers() {
+    const P table=game<P>(0x08FAB540);
+    const auto buckets=get<P*>(table,0x10);
+    const U size=get<U>(table,8);
+    if(!buckets || !size || size>0x1000000) return false;
+    if(catalog_buckets!=buckets || catalog_size!=size) {
+        catalog_buckets=buckets; catalog_size=size; catalog_bucket=0;
+        map_markers.clear();
+    }
+    const U stop=std::min(size,catalog_bucket+4096);
+    ExtraLock lock;
+    for(;catalog_bucket<stop;++catalog_bucket) {
+        unsigned remaining=8192;
+        for(P node=buckets[catalog_bucket];node && remaining--;node=get<P>(node,0)) {
+            P form=get<P>(node,0x10);
+            if(type(form)==0x31 && !(get<U>(form,0xC)&0x20) && extra(extra_list(form),0x33)) {
+                map_markers.insert(id(form));
+            }
+        }
+    }
+    return catalog_bucket==size;
+}
+P map_world(P world) {
+    for(unsigned depth=0;world && depth<16;++depth) {
+        if(type(world)!=0x35) return nullptr;
+        P parent=get<P>(world,0xF8);
+        if(!parent) return world;
+        world=parent;
+    }
+    return nullptr;
+}
+double numeric_setting(const char* name,double fallback) {
+    P table=game<P>(0x08FAF738);
+    P vtable=get<P>(table,0);
+    if(!vtable || !name || (name[0]!='i' && name[0]!='f')) return fallback;
+    const auto bucket=get<U(*)(P,const char*)>(vtable,8)(table,name);
+    const auto size=get<U>(table,8);
+    const auto buckets=get<P*>(table,0x10);
+    if(!buckets || bucket>=size) return fallback;
+    unsigned remaining=8192;
+    for(P node=buckets[bucket];node && remaining--;node=get<P>(node,0)) {
+        const auto key=get<const char*>(node,8);
+        if(key && get<bool(*)(P,const char*,const char*)>(vtable,0x10)(table,name,key)) {
+            P setting=get<P>(node,0x10);
+            if(!setting) return fallback;
+            const double value=name[0]=='i' ? get<std::int32_t>(setting,0) : get<float>(setting,0);
+            return std::isfinite(value) ? value : fallback;
+        }
+    }
+    return fallback;
+}
+bool compass(U ref,U request) {
+    P actor=find(ref);
+    if(type(actor)!=0x32 || !attached(cell(actor))) return false;
+    const bool indexed=index_map_markers();
+    std::ostringstream out;
+    header(out,ref,request);
+    out << ",\"indexed\":" << yes(indexed) << ",\"cell_ref\":" << id(cell(actor)) << ",\"markers\":[";
+    bool first=true;
+    const double range=std::max(0.0,numeric_setting("iMapMarkerVisibleDistance",12000));
+    P world=interior(cell(actor)) ? nullptr : map_world(get<P>(cell(actor),0xC8));
+    if(world) {
+        ExtraLock lock;
+        for(U marker_id:map_markers) {
+            P marker=find(marker_id);
+            if(type(marker)!=0x31 || map_world(game<P(*)(P)>(0x06580940)(marker))!=world) continue;
+            P data=get<P>(extra(extra_list(marker),0x33),0x18);
+            if(!data) continue;
+            const Vec delta=difference(position(marker),position(actor));
+            const double distance=std::sqrt(double(delta.x)*delta.x+double(delta.y)*delta.y+double(delta.z)*delta.z);
+            if(!std::isfinite(distance) || distance>range) continue;
+            if(!first) out << ',';
+            first=false;
+            double angle=std::atan2(delta.x,delta.y)*180.0/3.14159265358979323846;
+            if(angle<0) angle+=360;
+            out << "{\"ref\":" << marker_id << ",\"name\":";
+            quoted(out,component_string(data));
+            out << ",\"angle\":" << angle << ",\"distance\":" << distance
+                << ",\"type\":" << get<std::uint16_t>(data,0x1A)
+                << ",\"flags\":" << unsigned(get<unsigned char>(data,0x18)) << '}';
+        }
+    }
+    out << "]}";
+    return save(compasses,ref,out);
 }
 bool inventory(U ref,U request) {
     P actor=find(ref);
@@ -407,6 +606,8 @@ bool route(std::string_view packet) {
     }
     switch(op) {
         case 'b': return count==1 && args[0]==1 && block_stock_death_load();
+        case 'c': return (count==3 || count==4) && cross_door(args[0],args[1],args[2],args[3]);
+        case 'm': return count==2 && compass(args[0],args[1]);
         case 'p': return count==2 && actor_position(args[0],args[1]);
         case 'i': return count==2 && inventory(args[0],args[1]);
         case 'd': return count==2 && door(args[0],args[1]);
@@ -450,11 +651,12 @@ bool install(const OBSEInterface* obse) {
         || params!=game<P>(0x08FB89D0) || get<U>(params,8)!=0 || get<Addr>(entry,0x30)!=image+console_original) return false;
     auto* api=static_cast<OBSETrampolineInterface*>(obse->QueryInterface(kInterface_Trampoline));
     if(!api || api->interfaceVersion<1 || !api->AllocateFromBranchPool) return false;
-    std::array<CallPatch,4> patches{{
+    std::array<CallPatch,5> patches{{
         {0x048B97C2,0x048CCC90,reinterpret_cast<Addr>(&transform),5,{},{}},
         {0x048D1A5B,0x048CCC90,reinterpret_cast<Addr>(&transform),5,{},{}},
         {0x0665FC8C,0x06654230,reinterpret_cast<Addr>(&queue_cell),5,{},{}},
         {0x06680F90,0,reinterpret_cast<Addr>(&scanned_actor_dead),6,{},{}},
+        {0x066A55D4,0x065CFA40,reinterpret_cast<Addr>(&evaluate_torch),5,{},{}},
     }};
     for(auto& patch:patches) {
         auto* site=game<char*>(patch.site);
@@ -511,10 +713,19 @@ LSS_EXPORT bool OBSEPlugin_Load(const OBSEInterface* obse) {
     return ready;
 }
 LSS_EXPORT U LSS_BackendVersion() { return ready ? 2 : 0; }
+LSS_EXPORT U LSS_BackendFeatures() {
+    return ready ? feature_compass|feature_topic_catalog|feature_saved_area|feature_guest_torch : 0;
+}
+LSS_EXPORT bool LSS_ControlGuestTorch(U ref) {
+    if(!ready || (ref && (ref>>24)!=0xFF)) return false;
+    controlled_torch_actor.store(ref,std::memory_order_relaxed);
+    return true;
+}
 LSS_EXPORT size_t LSS_CopyActorPositionJSON(U key,char* out,size_t cap) { return copy(positions,key,out,cap); }
 LSS_EXPORT size_t LSS_CopyDoorJSON(U key,char* out,size_t cap) { return copy(doors,key,out,cap); }
 LSS_EXPORT size_t LSS_CopyDialogueJSON(U key,char* out,size_t cap) { return copy(dialogues,key,out,cap); }
 LSS_EXPORT size_t LSS_CopyInventoryJSON(U key,char* out,size_t cap) { return copy(inventories,key,out,cap); }
+LSS_EXPORT size_t LSS_CopyCompassJSON(U key,char* out,size_t cap) { return copy(compasses,key,out,cap); }
 LSS_EXPORT bool LSS_SetTransformHold(Addr component,bool enabled) {
     if(!ready || !component) return false;
     std::lock_guard lock(transform_mutex);

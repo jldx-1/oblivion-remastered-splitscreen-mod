@@ -43,6 +43,9 @@ local function request(adapter,pending,now)
 end
 
 function SavedArea.begin(adapter,actor,save_id)
+    if adapter.native.backend_protocol and adapter.native.backend_protocol()==2 then
+        return require("lib.area_restore").begin(adapter,actor,save_id)
+    end
     if not actor:match("^FF%x%x%x%x%x%x$") then return false,"The saved companion reference is unsupported" end
     local now=adapter.native.clock_ms()
     local pending={actor=actor,id=tonumber(actor,16),save_id=save_id,campaign=adapter.campaign_id,
@@ -74,6 +77,7 @@ local function attach_view(adapter,pending,now)
 end
 
 function SavedArea.poll(adapter)
+    if adapter.saved_area.modern then return require("lib.area_restore").poll(adapter) end
     local n=adapter.native
     local pending=adapter.saved_area
     local now=n.clock_ms()

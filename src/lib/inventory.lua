@@ -162,14 +162,12 @@ function Inventory:input(pad)
     if self.player==2 and not self.open and not was_open and pressed(4) then self:toggle(magic) end
     if self.open then
         local now=self.adapter.native.clock_ms()
-        -- These columns require native per-instance durability and derived
-        -- combat values, which the snapshot does not yet expose. Hide them
-        -- instead of presenting zero as a real statistic.
         for _,entry in ipairs(self.list:GetDisplayedEntryWidgets() or {}) do
             local row=entry:get()
             if valid(row) then
-                for _,name in ipairs({"inv_entry_health","inv_entry_weapon_damage","inv_entry_armor_rating"}) do
-                    if valid(row[name]) then row[name]:SetVisibility(1) end
+                local item=self.items[row.Properties.InventoryIndex+1]
+                for name,key in pairs({inv_entry_health="health",inv_entry_weapon_damage="damage",inv_entry_armor_rating="armor"}) do
+                    if valid(row[name]) then row[name]:SetVisibility(item and item[key]~=nil and 4 or 1) end
                 end
                 for _,name in ipairs({"inv_entry_value","inv_entry_weight"}) do
                     if valid(row[name]) then row[name]:SetVisibility(self.category==magic and 1 or 4) end

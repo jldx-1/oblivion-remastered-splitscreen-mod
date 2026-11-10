@@ -21,6 +21,19 @@ local function streamed_reference(doors,name,guid)
     end
 end
 
+local function same_guid(a,b)
+    return type(a)=="table" and #a==4 and a[1]==b.A and a[2]==b.B and a[3]==b.C and a[4]==b.D
+end
+
+function Fixtures.remember(adapter,source,snapshot)
+    local link=snapshot.door
+    if not link or not link.has_teleport or not link.destination_ref or not link.destination_cell
+        or not link.source_guid or not link.destination_guid then return end
+    adapter.streamed_doors=adapter.streamed_doors or {}
+    adapter.streamed_doors[source]={guid=link.source_guid,cell=snapshot.cell_ref}
+    adapter.streamed_doors[link.destination_ref]={guid=link.destination_guid,cell=link.destination_cell}
+end
+
 function Fixtures.door_reference(adapter,door)
     local component=door.TESRefComponent
     if not component or not component:IsValid() then return end
@@ -32,11 +45,17 @@ function Fixtures.door_reference(adapter,door)
     end
     if component.FormIDInstance~=0 then return end
     local fixture=adapter.experimental_background_sewer and os.getenv("LSS_KEEP_PLAZA_GRID_FIXTURE")=="1"
-    if not fixture and not adapter.hotel_guest_travel then return end
+    if not fixture and not adapter.hotel_guest_travel and not adapter.experimental_door_travel then return end
     -- Background instances can have the exterior runtime cell name. The
     -- authored GUID and instance package still identify these exact doors.
     local name=door:GetFullName()
     local guid=component.Guid
+    for ref,authored in pairs(adapter.streamed_doors or {}) do
+        local area=adapter.area_streams and adapter.area_streams[authored.cell]
+        if area and name:find("/"..area.fixture.level.."_LSS.",1,true) and same_guid(authored.guid,guid) then
+            return ref
+        end
+    end
     local ref=streamed_reference(streamed_door,name,guid)
     if ref==hotel.exit or fixture and ref then return ref end
     if fixture and adapter.experimental_upstairs then return streamed_reference(streamed_stair_door,name,guid) end

@@ -13,6 +13,14 @@ local races={[0x907]="imperial",[0xD43]="redguard",[0x191C0]="orc",[0x191C1]="da
     [0x224FD]="nord",[0x23FE9]="argonian"}
 local voice_types={[0]="",[1]="/altvoice",[2]="/beggar"}
 local function valid(object) return object and object:IsValid() end
+local function localized_name(name)
+    if name:sub(1,7)=="LOC_FN_" then
+        local texts=StaticFindObject("/Script/Engine.Default__KismetTextLibrary")
+        local label=texts:TextFromStringTable(FName("/Game/Localization/StringTables/ST_FullNames.ST_FullNames"),name):ToString()
+        if not label:find("MISSING STRING",1,true) then return label end
+    end
+    return name
+end
 
 function Dialogue.new(adapter,canvas)
     return setmetatable({adapter=adapter,canvas=canvas,panels={{},{}},
@@ -100,17 +108,19 @@ function Dialogue:start(player,speaker)
     panel.session=session
     local base=speaker.TESRefComponent.TESForm
     local name=valid(base) and base.FullName:ToString() or "Conversation"
-    if name:sub(1,7)=="LOC_FN_" then
-        local texts=StaticFindObject("/Script/Engine.Default__KismetTextLibrary")
-        local label=texts:TextFromStringTable(FName("/Game/Localization/StringTables/ST_FullNames.ST_FullNames"),name):ToString()
-        if not label:find("MISSING STRING",1,true) then name=label end
-    end
+    name=localized_name(name)
     panel.frame["Update Speaker Name"](panel.frame,FText(name))
     panel.frame["Update Responses"](panel.frame,{})
     set_text(panel,"Finding topics…")
     panel.frame:SetVisibility(3)
 
     local signed=listener_id>=0x80000000 and listener_id-0x100000000 or listener_id
+    if self.adapter.guest_dialogue_catalog then
+        self.request=self.request+1
+        session.catalog=self.request
+        self.adapter:command(("LSSDialogue %d %d %d 0"):format(self.request,speaker_id,signed))
+        return true
+    end
     local commands={}
     for _,topic in ipairs(topics) do
         if not session.read_only or topic[1]~=0x45F63 then
@@ -124,16 +134,52 @@ function Dialogue:start(player,speaker)
 end
 
 function Dialogue:responses(session)
-    local choices={}
-    for _,pending in ipairs(session.pending) do
+    if session.catalog then
+        local raw=self.adapter.native.backend_dialogue(session.catalog)
+        local reply=raw and json.decode(raw)
+        if not reply or reply.request~=session.catalog or reply.speaker_ref~=session.speaker_id
+            or reply.listener_ref~=session.listener_id or reply.topic_ref~=0 or type(reply.topics)~="table" then return false end
+        for _,topic in ipairs(reply.topics) do
+            if not session.read_only or topic.ref~=0x45F63 then
+                local name=localized_name(topic.name)
+                for _,fallback in ipairs(topics) do if fallback[1]==topic.ref then name=fallback[2]; break end end
+                if name~="" then
+                    self.request=self.request+1
+                    session.pending[#session.pending+1]={id=self.request,topic={topic.ref,name}}
+                end
+            end
+        end
+        session.catalog=nil
+        session.pending_sent=0
+        session.deadline=self.adapter.native.clock_ms()+5000
+    end
+    local choices=session.ready_choices or {}
+    session.ready_choices=choices
+    for index=session.pending_index or 1,#session.pending do
+        if session.pending_sent and index>session.pending_sent then
+            local last=math.min(#session.pending,index+31)
+            local signed=session.listener_id>=0x80000000 and session.listener_id-0x100000000 or session.listener_id
+            local commands={}
+            for next_index=index,last do
+                local pending=session.pending[next_index]
+                commands[#commands+1]=("LSSDialogue %d %d %d %d"):format(pending.id,session.speaker_id,signed,pending.topic[1])
+            end
+            session.pending_sent=last
+            self.adapter:command(commands)
+            return false
+        end
+        local pending=session.pending[index]
         local raw=self.adapter.native.backend_dialogue(pending.id)
         if not raw then return false end
         local reply=json.decode(raw)
         if reply.request~=pending.id or reply.speaker_ref~=session.speaker_id
             or reply.listener_ref~=session.listener_id or reply.topic_ref~=pending.topic[1] then return false end
         if #reply.choices>0 then choices[#choices+1]={id=pending.topic[1],name=pending.topic[2],infos=reply.choices} end
+        session.pending_index=index+1
+        session.deadline=self.adapter.native.clock_ms()+3000
     end
     session.choices,session.pending=choices,nil
+    session.ready_choices,session.pending_index,session.pending_sent=nil,nil,nil
     return true
 end
 

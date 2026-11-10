@@ -135,8 +135,39 @@ function HUD:field(name,value,refresh)
  self.model:K2_BroadcastFieldValueChanged({FieldName=FName("Get"..name)})
 end
 function HUD:copy_compass_markers()
- -- The campaign supplies the shared map and quest markers. Copy the native
- -- array so the guest's compass can position them using its own heading.
+ local adapter=self.adapter
+ if adapter.native.backend_compass and not self.compass_unavailable then
+  local id=tonumber(adapter.actor_ref,16)
+  local raw,reason=adapter.native.backend_compass(id)
+  self.compass_unavailable=reason=="Native compass backend is not loaded"
+  local reply=raw and json.decode(raw)
+  if reply and reply.indexed and reply.actor_ref==id and reply.request==self.compass_request then
+   local original={}
+   self.host_model.CompassIconMarkers:ForEach(function(_,entry) original[#original+1]=entry:get() end)
+   local markers=require("lib.compass").markers(original,reply.markers)
+   local texts=StaticFindObject("/Script/Engine.Default__KismetTextLibrary")
+   for _,marker in ipairs(markers) do
+    if not marker.LocalisedName then
+     marker.LocalisedName=marker.Name:sub(1,7)=="LOC_FN_"
+      and texts:TextFromStringTable(FName("/Game/Localization/StringTables/ST_FullNames.ST_FullNames"),marker.Name)
+      or FText(marker.Name)
+    end
+   end
+   local array=self.model.CompassIconMarkers
+   if array:GetArrayNum()>#markers then array:Empty() end
+   for index,marker in ipairs(markers) do array[index]=marker end
+   self.model:K2_BroadcastFieldValueChanged({FieldName=FName("CompassIconMarkers")})
+   self.model:K2_BroadcastFieldValueChanged({FieldName=FName("GetCompassIconMarkers")})
+   self.compass_snapshot=reply
+  end
+  local now=adapter.native.clock_ms()
+  if not self.compass_unavailable and now>=(self.next_compass_request or 0) then
+   self.next_compass_request=now+200
+   self.compass_request=710000000+now%100000000
+   adapter:command(adapter.actor_ref..".LSSCompass "..self.compass_request)
+  end
+  if self.compass_snapshot then return end
+ end
  self.model.CompassIconMarkers=self.host_model.CompassIconMarkers
  self.model:K2_BroadcastFieldValueChanged({FieldName=FName("CompassIconMarkers")})
  self.model:K2_BroadcastFieldValueChanged({FieldName=FName("GetCompassIconMarkers")})
@@ -441,6 +472,7 @@ function HUD:destroy()
  self.screens,self.reticles={},{}
  self.layout=nil
  self.inventory,self.inventory_request,self.inventory_request_at=nil,nil,nil
+ self.compass_snapshot,self.compass_request,self.next_compass_request=nil,nil,nil
  self.screen,self.model,self.reticle_model,self.actor_address=nil,nil,nil,nil
 end
 function HUD:update(session)

@@ -245,12 +245,13 @@ test("the engine waits for the System menu pause to end before joining", functio
     assert(not e:world_ready())
     FindAllOf,StaticFindObject=previous_find,previous_static
 end)
-test("guest object activation waits for the confirmed target and leaves doors to travel",function()
+test("guest activation dispatches its own target and leaves doors to travel",function()
     local Engine=require("lib.engine")
     local original_find=StaticFindObject
     local cached,door,pressed=10,false,0
     local object={IsValid=function() return true end,GetAddress=function() return 10 end,
-        TESRefComponent={IsValid=function() return true end,bIsPaired=true},
+        TESRefComponent={IsValid=function() return true end,bIsPaired=true,
+            GetHexFormRefID=function() return "0000000A" end},
         IsA=function(_,class) return class=="/Script/Altar.VActor" or (door and class=="/Script/Altar.VDoor") end}
     local actor={IsValid=function() return true end,GetAttachedActors=function() end,
         GetAimingStartPosition=function() return {X=0,Y=0,Z=0} end}
@@ -267,18 +268,21 @@ test("guest object activation waits for the confirmed target and leaves doors to
     e.actor=actor
     local rotation={Yaw=90,Pitch=0,Roll=0}
     local host={Pawn=actor,IsValid=function() return true end,
-        ActivateInput_Pressed=function() pressed=pressed+1 end,
+        ActivateInput_Pressed=function() assert(cached==10); pressed=pressed+1 end,
         GetControlRotation=function() return rotation end,
         SetControlRotation=function(_,value) rotation=value end}
     e.host=function() return host end
     e.gameplay_input_enabled=function() return true end
     e.host_activation_target_address=function() return cached end
     e.guest_aim=function() return {X=0,Y=0,Z=0},{X=1,Y=0,Z=0} end
-    assert(e:activate_shared_object() and e.activation==2 and pressed==1)
-    assert(not e:activate_shared_object() and pressed==1)
+    e:interact_guest()
+    assert(e.activation==2 and pressed==1)
+    e:interact_guest()
+    assert(pressed==1)
     e.activation=nil
     cached=11
-    assert(e:activate_shared_object() and pressed==1 and rotation.Yaw==0)
+    e:interact_guest()
+    assert(pressed==1)
     e:poll_guest_interaction()
     assert(pressed==1)
     cached=10
@@ -286,7 +290,9 @@ test("guest object activation waits for the confirmed target and leaves doors to
     assert(pressed==2 and rotation.Yaw==90)
     e.activation=nil
     door=true
-    assert(not e:activate_shared_object() and pressed==2)
+    e.begin_guest_door=function(_,ref) assert(ref==10); door="dispatched" end
+    e:interact_guest()
+    assert(door=="dispatched" and pressed==2)
     StaticFindObject=original_find
 end)
 test("settings require two distinct live controller instances",function()
@@ -390,6 +396,66 @@ test("player two rejects input from player one's controller", function()
     local Engine=require("lib.engine")
     local e=Engine.new(native,store,function() end); e.slot=0
     assert(e:input({slot=1,connected=true,lx=32767,buttons=4096},0.016)==false)
+end)
+test("host automatic respawn retries after a failed native recovery",function()
+    local Engine=require("lib.engine")
+    local now=100
+    local e=Engine.new({clock_ms=function() return now end},store,function() end)
+    local pawn={IsValid=function() return true end,IsDead=function() return true end,
+        TESRefComponent={IsValid=function() return true end,bIsPaired=true},
+        ActorValuesPairingComponent={}}
+    local host={Pawn=pawn}
+    e.host=function() return host end
+    e.gameplay_input_enabled=function() return true end
+    e.host_downed=true
+    e.host_revive_until=100
+    local requests=0
+    e.request_host_recovery=function(self)
+        requests=requests+1
+        self.host_recovery={deadline=now+6000}
+        return true
+    end
+    assert(e:input_host_recovery(host,0) and requests==1)
+    now=6200
+    assert(e:input_host_recovery(host,0) and not e.host_recovery)
+    assert(e:input_host_recovery(host,0) and requests==2)
+end)
+test("guest compass uses its own distances without changing the host markers",function()
+    local Compass=require("lib.compass")
+    local host={{Name="near_host",Angle=45,Distance=200,bIsVisible=true},
+        {Name="shared",Angle=60,Distance=700,bIsVisible=true},
+        {Name="quest",bIsAQuestTarget=true,Angle=80,Distance=1000}}
+    local records={{name="shared",angle=125,distance=300,type=3,flags=3},
+        {name="near_guest",angle=200,distance=100,type=2,flags=1}}
+    local markers=Compass.markers(host,records)
+    assert(#markers==3 and markers[1].Name=="shared" and markers[1].Distance==300 and markers[1].Angle==125)
+    assert(markers[2].Name=="quest" and markers[2].bIsAQuestTarget)
+    assert(markers[3].Name=="near_guest" and markers[3].Distance==100)
+    assert(host[2].Angle==60 and host[2].Distance==700)
+end)
+test("large dialogue catalogs finish within the backend's bounded reply cache",function()
+    local Dialogue=require("lib.dialogue")
+    local entries={}
+    for index=1,300 do entries[index]={ref=100000+index,name="Topic "..index} end
+    local session={catalog=1,speaker_id=2,listener_id=0xFF00D0A2,pending={},read_only=true}
+    local replies={[1]=json.encode({request=1,speaker_ref=2,listener_ref=session.listener_id,topic_ref=0,topics=entries})}
+    local order={1}
+    local adapter={native={clock_ms=function() return 100 end,backend_dialogue=function(id) return replies[id] end}}
+    adapter.command=function(_,commands)
+        assert(#commands<=32)
+        for _,command in ipairs(commands) do
+            local request,topic=command:match("LSSDialogue (%d+) %d+ %-?%d+ (%d+)")
+            request,topic=tonumber(request),tonumber(topic)
+            replies[request]=json.encode({request=request,speaker_ref=2,listener_ref=session.listener_id,
+                topic_ref=topic,choices={{info_ref=topic+1000}}})
+            order[#order+1]=request
+            if #order>256 then replies[table.remove(order,1)]=nil end
+        end
+    end
+    local dialogue=Dialogue.new(adapter)
+    local ready=false
+    for _=1,12 do if dialogue:responses(session) then ready=true; break end end
+    assert(ready and #session.choices==300 and session.choices[300].id==100300)
 end)
 test("an older save's companion is never used as a fallback for a different save", function()
     local Engine=require("lib.engine")
@@ -553,16 +619,16 @@ test("guest dialogue ignores the host's body while walls and spell targeting sti
         GetControlRotation=function() return {Yaw=0,Pitch=0,Roll=0} end,
         SetControlRotation=function() end} end
     e.gameplay_input_enabled=function() return true end
-    e:begin_shared_dialogue()
+    e:interact_guest()
     assert(started==0)
     wall=false
     assert(e:guest_target(350)=="00000014")
     cached=first:GetAddress()
-    e:begin_shared_dialogue()
-    assert(started==0 and not e.guest_dialogue)
+    e:interact_guest()
+    assert(started==0)
     cached=npc:GetAddress()
     e:poll_guest_interaction()
-    assert(started==1 and e.activation==2 and e.guest_dialogue)
+    assert(started==1 and e.guest_dialogue.speaker_ref==0x1C4C5)
 
     StaticFindObject=previous_static
 end)
@@ -710,6 +776,83 @@ test("native door arrival accepts the adjacent exterior cell only at the actual 
     assert(offset[1]==10 and offset[2]==-20 and offset[3]==30)
     actor.native_position[1]=900
     assert(not DoorArrival.origin_offset(link,actor))
+end)
+test("door landing chooses a clear neighbour and rejects blocked alternatives",function()
+    local Travel=require("lib.door_travel")
+    local Fixtures=require("lib.door_fixtures")
+    local rendered,find=Fixtures.rendered_door,StaticFindObject
+    local blocked=false
+    Fixtures.rendered_door=function() return {
+        K2_GetActorLocation=function() return {X=0,Y=0,Z=0} end,
+        K2_GetActorRotation=function() return {Pitch=0,Yaw=0,Roll=0} end} end
+    StaticFindObject=function() return {SphereTraceSingle=function() return blocked end} end
+    local capsule={GetScaledCapsuleHalfHeight=function() return 90 end,GetScaledCapsuleRadius=function() return 42 end}
+    local host={Pawn={CapsuleComponent=capsule,K2_GetActorLocation=function() return {X=0,Y=0,Z=90} end}}
+    local a={actor_ref="FF000123",actor={CapsuleComponent=capsule},native={clock_ms=function() return 100 end},
+        host=function() return host end,command=function() end}
+    local function link() return {destination_ref=2,arrival_offset={0,0,0},arrival={0,0,0},
+        arrival_rotation={0,0,0},destination_rotation={0,0,0}} end
+    local pending=assert(Travel.begin(a,1,100,link(),false,true))
+    assert(pending.landing==1 and pending.link.arrival[1]==90 and math.abs(pending.position.X-128.5875)<1e-6)
+    blocked=true
+    local original=link()
+    assert(not Travel.begin(a,1,100,original,false,true))
+    assert(original.arrival[1]==0 and original.arrival_offset[1]==0)
+    Fixtures.rendered_door,StaticFindObject=rendered,find
+end)
+
+test("saved interior restoration keeps the actor and verifies gear after possession",function()
+    local Restore=require("lib.area_restore")
+    local Background=require("lib.background_cell")
+    local describe,stream,registered=Background.describe,Background.stream,Background.registered
+    local streams=0
+    Background.describe=function(cell) return {cell=cell,level="Test_LevelInstance"} end
+    Background.stream=function() streams=streams+1; return {IsValid=function() return true end,IsLevelVisible=function() return true end} end
+    Background.registered=function() return true end
+    local function fixture(same_cell)
+        local cell=same_cell and 114110 or 175850
+        local state=same_cell and 6 or 0
+        local items={{form_id=141752,count=1,equipped=true,left=false}}
+        local a={campaign_id="campaign",native={},log=function() end,world_ready=function() return true end,
+            save_id=function() return "save" end,campaign=function() return "campaign" end,
+            host=function() return {Pawn={}} end,find_actor=function() return {IsValid=function() return true end} end}
+        a.native.clock_ms=function() return 100 end
+        a.native.backend_actor_position=function(id)
+            return json.encode({actor_ref=id,request=a.saved_area.request,cell_ref=id==20 and 114110 or cell,
+                interior=id~=20 and not same_cell,actor_paired=state==6,
+                cell={state=state,attached=id==20 or state==6,paired=state~=0,has_native_root=state~=0}})
+        end
+        a.native.backend_inventory=function(id)
+            return json.encode({actor_ref=id,request=a.saved_area.request,items=items})
+        end
+        a.command=function(_,commands)
+            if type(commands)=="string" and commands:find(" 2$",1) then state=3
+            elseif type(commands)=="string" and commands:find(" 3$",1) then state=6 end
+        end
+        a.create_view=function() a.created=true end
+        a.finish_join=function() a.possessed=true end
+        a.guest_equipment_commands=function() return {} end
+        return a,function() items[1].equipped=false end
+    end
+    local a=fixture(false)
+    assert(Restore.begin(a,"FF000123","save")=="pending")
+    for _=1,5 do assert(Restore.poll(a)=="pending") end
+    assert(a.created and a.possessed and a.actor_ref=="FF000123" and a.saved_area.phase=="verifying")
+    assert(Restore.poll(a)==true and a.saved_area_status.equipment_restored and streams==1)
+    local b,change=fixture(true)
+    assert(Restore.begin(b,"FF000123","save")=="pending")
+    assert(Restore.poll(b)=="pending" and streams==1)
+    assert(Restore.poll(b)=="pending" and b.possessed)
+    change()
+    for _=1,3 do assert(Restore.poll(b)=="pending") end
+    local ok,reason=Restore.poll(b)
+    assert(ok==false and reason:find("equipment could not be restored",1,true))
+    local c=fixture(false)
+    assert(Restore.begin(c,"FF000123","save")=="pending")
+    c.save_id=function() return "another save" end
+    local result,message=Restore.poll(c)
+    assert(result==false and message:find("save changed",1,true) and streams==1)
+    Background.describe,Background.stream,Background.registered=describe,stream,registered
 end)
 cleanup()
 print(string.format("%d tests passed", passed))

@@ -29,6 +29,9 @@ if layout_file then
     if saved=="0" then adapter.layout=Layout.stacked end
 end
 if isolated_dir then adapter.save_directory=isolated_dir.."/Saved/SaveGames/" end
+local backend_features=native.backend_features and native.backend_features() or 0
+adapter.saved_area_supported=backend_features & 4~=0
+adapter.guest_torch_supported=backend_features & 8~=0
 adapter.experimental_saved_area=simulator~=nil and native.suppressed_transforms()~=nil
 adapter.experimental_background_sewer=adapter.experimental_saved_area and isolated_dir
     and os.getenv("LSS_BACKGROUND_SEWER_FIXTURE")=="1"
@@ -132,9 +135,13 @@ local function tick()
         end
     end
     local dt=math.min(0.05,math.max(0.001,(now-last_time)/1000)); last_time=now
+    local focused=native.focused() or simulator
+    if session.state=="suspended" or session.state=="active" and not focused then
+        adapter:recover_without_input()
+    end
     local pads,error=native.poll()
     if not pads then session.status=error; return end
-    if native.focused() or simulator then
+    if focused then
         local f10=native.focused() and native.key_down(0x79)
         if f10 and not previous_f10 and not adapter.host_downed and adapter:gameplay_input_enabled() then
             adapter:host():OpenOptionsMenuInput_Pressed()

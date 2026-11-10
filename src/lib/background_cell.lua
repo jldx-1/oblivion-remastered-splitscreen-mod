@@ -19,17 +19,29 @@ local function level_name(fixture)
     return assert(fixture.level:match("^(.+)_LevelInstance$"))
 end
 
-function BackgroundCell.stream(host,fixture)
+local function package_for(cell)
     local tables=StaticFindObject("/Script/Engine.Default__KismetStringTableLibrary")
     if not tables:IsValid() then return end
     local table_asset="/Game/Tools/MapImporter/ST_CellsToMapPath.ST_CellsToMapPath"
     local table_id=FName(table_asset)
     if not tables:IsRegisteredTableId(table_id) then LoadAsset(table_asset) end
-    local key=("Oblivion.esm_%08x"):format(fixture.cell)
+    local key=("Oblivion.esm_%08x"):format(cell)
     if not tables:IsRegisteredTableEntry(table_id,key) then return end
     local source=tables:GetTableEntrySourceString(table_id,key)
     local package_name=type(source)=="string" and source or source:ToString()
-    if not package_name:match("^/Game/Maps/Interiors/[^:]+$") or package_name:match("([^/]+)$")~=level_name(fixture) then return end
+    if package_name:match("^/Game/Maps/Interiors/[^:]+$") then return package_name end
+end
+
+function BackgroundCell.describe(cell,entrance,exit)
+    local package_name=package_for(cell)
+    if package_name then
+        return {cell=cell,entrance=entrance,exit=exit,level=package_name:match("([^/]+)$").."_LevelInstance"}
+    end
+end
+
+function BackgroundCell.stream(host,fixture)
+    local package_name=package_for(fixture.cell)
+    if not package_name or package_name:match("([^/]+)$")~=level_name(fixture) then return end
     local loader=StaticFindObject("/Script/Engine.Default__LevelStreamingDynamic")
     local stream=loader:LoadLevelInstance(host,package_name,{X=0,Y=0,Z=0},
         {Pitch=0,Yaw=0,Roll=0},{},fixture.level.."_LSS",StaticFindObject("/Script/Altar.VLevelStreaming"),false)
