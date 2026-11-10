@@ -1156,9 +1156,97 @@ function Engine:start_host_routing()
     self.host_buttons,self.host_attack,self.host_block=0,false,false
     self.host_axes={}
 end
+local function pawn_distance_squared(first,second)
+    local a,b=first:K2_GetActorLocation(),second:K2_GetActorLocation()
+    return (a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2
+end
+
+function Engine:can_revive_guest()
+    if self.guest_recovery or self.guest_unloaded or not paired(self.actor) or not self.actor:IsDead() then return false end
+    local host=self:host()
+    return valid(host) and paired(host.Pawn) and not host.Pawn:IsDead()
+        and pawn_distance_squared(host.Pawn,self.actor)<=240^2
+end
+
+function Engine:request_guest_recovery(respawn)
+    local ref=self.actor_ref
+    if self.guest_recovery or self.guest_unloaded or not paired(self.actor) or not self.actor:IsDead()
+        or not ref or not ref:match("^FF%x%x%x%x%x%x$")
+        or (not respawn and not self:can_revive_guest()) then return false end
+    -- Animate the original actor back to life, keeping its equipment and reference.
+    self:command(ref..".resurrect 1")
+    self.interaction_notice=nil
+    self.guest_recovery={respawn=respawn,deadline=self.native.clock_ms()+6000}
+    return true
+end
+
+function Engine:input_guest_recovery(buttons)
+    local actor=self.actor
+    local dead=actor:IsDead()
+    local recovery=self.guest_recovery
+    if not dead and not recovery and not self.guest_downed then return false end
+    local now=self.native.clock_ms()
+    if not self.guest_downed then
+        self.guest_downed=true
+        self:cancel_guest_interaction()
+        self:release_activation(2)
+        if self.dialogues then self.dialogues:close(2) end
+        if self.inventories then self.inventories[2]:close() end
+        self.guest_door=nil
+        if self.door_preload then require("lib.door_preload").stop(self) end
+        if self.guest_crossing then require("lib.door_travel").cancel(self) end
+        Actions.release(actor,self.guest_actions)
+        self.blocking,self.attacking=false,false
+        local movement=actor.PairedPawnMovementComponent
+        movement:ResetOffsetMovementInput()
+        movement:StopSprint()
+        self:set_guest_speed()
+        self.dirty=true
+    end
+    local host=self:host().Pawn
+    if recovery then
+        if not dead and not actor:IsUnconscious() then
+            if not recovery.respawn then
+                self.guest_recovery=nil
+            elseif not recovery.move_sent then
+                -- Skip the move if the host's area is out of reach. Separate
+                -- interiors can have distant render coordinates even next to a door.
+                if host:IsDead() or pawn_distance_squared(host,actor)>8000^2 then
+                    self.guest_recovery=nil
+                    self:guest_interaction_notice("Player 2 recovered where they fell.")
+                else
+                    -- Use a native move so the save and render positions agree.
+                    self:command(self.actor_ref..".moveto player 0 90 0")
+                    recovery.move_sent=true
+                    recovery.deadline=now+3500
+                    recovery.confirm_after=now+200
+                end
+            elseif now>=recovery.confirm_after and pawn_distance_squared(host,actor)<=360^2 then
+                self.guest_recovery=nil
+            end
+        end
+        if self.guest_recovery and now>=recovery.deadline then
+            self.guest_recovery=nil
+            self:guest_interaction_notice(dead and "Recovery failed. Try again."
+                or "Player 2 recovered where they fell.")
+        end
+    elseif dead and buttons & 4096~=0 and (self.last_buttons or 0) & 4096==0 then
+        self:request_guest_recovery(true)
+    end
+    if not dead and not self.guest_recovery then
+        self.guest_downed=nil
+        actor.PairedPawnMovementComponent:SetIsMovementLocked(false)
+        self.dirty=true
+    end
+    self.last_buttons=buttons
+    self:update_camera()
+    return true
+end
+
 function Engine:input_host(pad,dt)
     local host=self:host()
     if not valid(host) or not pad or not pad.connected or pad.slot~=self:host_slot() then return false end
+    self.host_controller_name=pad.simulated and "DualSense" or pad.name
     local buttons=pad.buttons or 0
     if self.guest_interaction and (buttons~=0 or math.abs(pad.rx or 0)>5000 or math.abs(pad.ry or 0)>5000
         or math.abs(pad.lx or 0)>5000 or math.abs(pad.ly or 0)>5000) then self:cancel_guest_interaction() end
@@ -1208,7 +1296,8 @@ function Engine:input_host(pad,dt)
     move_from_view(host.Pawn,x,y,yaw)
     if pressed(4096) then host.Pawn:Jump() end
     if released(4096) then host.Pawn:StopJumping() end
-    if pressed(16384) and not self.activation and not self.guest_dialogue then
+    if pressed(16384) and not self.activation and not self.guest_dialogue
+        and not self:request_guest_recovery(false) then
         local address=self:host_activation_target_address()
         local target
         if self.experimental_dialogue or address==nil then target=self:host_interaction_target() end
@@ -1243,13 +1332,15 @@ function Engine:input(pad,dt)
     self.guest_controller_name=pad.simulated and "DualSense" or pad.name
     if self.guest_unloaded or not paired(self.actor) then return self:wait_for_guest() end
     if not valid(self.pc) or not valid(self.camera) then return false end
-    if self.recover_equipment then self:poll_guest_equipment(); return true end
     local buttons=pad.buttons or 0
+    local gameplay_enabled=self:gameplay_input_enabled()
+    if gameplay_enabled and self:input_guest_recovery(buttons) then return true end
+    if self.recover_equipment then self:poll_guest_equipment(); return true end
     if self.guest_crossing then self.last_buttons=buttons; return true end
     if buttons & 16384==0 then self:release_activation(2) end
     self:poll_guest_interaction()
     self:restore_guest_quiver()
-    if not self:gameplay_input_enabled() then
+    if not gameplay_enabled then
         self.guest_door=nil
         if self.door_preload then require("lib.door_preload").cancel_crossing(self) end
         self.actor.PairedPawnMovementComponent:ResetOffsetMovementInput()
@@ -1463,6 +1554,7 @@ end
 function Engine:resume(slot) self.slot=slot; self.last_buttons=0 end
 function Engine:rollback()
     self.interaction_notice=nil
+    self.guest_downed,self.guest_recovery=nil,nil
     self:cancel_guest_interaction()
     self:restore_guest_npc_animation()
     self.host_door,self.host_travel=nil,nil

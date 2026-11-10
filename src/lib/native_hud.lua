@@ -14,6 +14,13 @@ local button_textures={
  square="/Game/Art/UI/Icons/Icons_Inputs/Prospero/T_Icon_Prospero_Square.T_Icon_Prospero_Square",
  x="/Game/Art/UI/Icons/Icons_Inputs/Xbox/T_Icon_Xbox_X.T_Icon_Xbox_X",
 }
+local function controller_style(controller)
+ local name=(controller or ""):lower()
+ if name:find("dualsense",1,true) or name:find("dualshock",1,true) or name:find("playstation",1,true) then
+  return "playstation"
+ end
+ if name:find("xbox",1,true) or name:find("xinput",1,true) then return "xbox" end
+end
 function HUD.new(_,canvas) return setmetatable({canvas=canvas,screens={},reticles={}},HUD) end
 local function owned(widget,screen)
  for _=1,32 do
@@ -185,22 +192,22 @@ function HUD:update_subtitle(visible)
  end
  self.subtitle:SetVisibility(4)
 end
+local function prompt_label(canvas)
+ local text=StaticConstructObject(StaticFindObject("/Script/UMG.TextBlock"),canvas)
+ local font=text.Font
+ font.Size=16
+ text:SetFont(font)
+ text:SetJustification(1)
+ text:SetShadowOffset({X=1,Y=2})
+ text:SetShadowColorAndOpacity({R=0,G=0,B=0,A=1})
+ return text
+end
 function HUD:mount_interaction_prompt()
  local function make(class)
   return StaticConstructObject(StaticFindObject("/Script/UMG."..class),self.canvas)
  end
- local function label()
-  local text=make("TextBlock")
-  local font=text.Font
-  font.Size=16
-  text:SetFont(font)
-  text:SetJustification(1)
-  text:SetShadowOffset({X=1,Y=2})
-  text:SetShadowColorAndOpacity({R=0,G=0,B=0,A=1})
-  return text
- end
  local box=make("VerticalBox")
- local title=label()
+ local title=prompt_label(self.canvas)
  box:AddChildToVerticalBox(title):SetHorizontalAlignment(2)
  local row=make("HorizontalBox")
  box:AddChildToVerticalBox(row):SetHorizontalAlignment(2)
@@ -212,7 +219,7 @@ function HUD:mount_interaction_prompt()
  local slot=row:AddChildToHorizontalBox(size)
  slot:SetPadding({Left=0,Top=0,Right=5,Bottom=0})
  slot:SetVerticalAlignment(2)
- local action=label()
+ local action=prompt_label(self.canvas)
  row:AddChildToHorizontalBox(action):SetVerticalAlignment(2)
  self.canvas:AddChildToCanvas(box):SetOffsets({Left=12,Top=0,Right=12,Bottom=0})
  self.interaction_prompt,self.interaction_title,self.interaction_row=box,title,row
@@ -223,13 +230,8 @@ function HUD:interaction_button_label(controller)
   return self.interaction_fallback
  end
  self.interaction_controller=controller
- local name=(controller or ""):lower()
- local key
- if name:find("dualsense",1,true) or name:find("dualshock",1,true) or name:find("playstation",1,true) then
-  key="square"
- elseif name:find("xbox",1,true) or name:find("xinput",1,true) then
-  key="x"
- end
+ local style=controller_style(controller)
+ local key=style=="playstation" and "square" or style=="xbox" and "x"
  local path=button_textures[key]
  local texture=path and StaticFindObject(path)
  if path and not valid(texture) then LoadAsset(path); texture=StaticFindObject(path) end
@@ -242,7 +244,7 @@ function HUD:update_interaction_prompt(visible)
  local adapter=self.adapter
  local inventory=adapter.inventories and adapter.inventories[2]
  local dialogue=adapter.dialogues and adapter.dialogues.panels[2].session
- if not visible or adapter.guest_unloaded or adapter.guest_dialogue or dialogue
+ if not visible or adapter.guest_downed or adapter.guest_unloaded or adapter.guest_dialogue or dialogue
      or (inventory and inventory.open) or adapter.guest_crossing then
   if valid(self.interaction_prompt) then self.interaction_prompt:SetVisibility(1) end
   self:set_interaction_icon(interaction_icons.none)
@@ -297,6 +299,44 @@ function HUD:update_interaction_prompt(visible)
  self.interaction_row:SetVisibility(action and 4 or 1)
  self.interaction_prompt:SetVisibility(4)
 end
+function HUD:update_recovery_prompts(visible)
+ local adapter=self.adapter
+ local messages={}
+ if visible and adapter.guest_downed then
+  local recovery=adapter.guest_recovery
+  if recovery then
+   messages[2]=recovery.respawn and "Respawning…" or "Player 1 is reviving you…"
+  else
+   local guest_style=controller_style(adapter.guest_controller_name)
+   local guest_button=guest_style=="playstation" and "Cross" or guest_style=="xbox" and "A" or "Bottom face button"
+   local notice=adapter.interaction_notice
+   if not notice or adapter.native.clock_ms()>=adapter.interaction_notice_until then notice="Player 2 is down" end
+   messages[2]=notice.."\n"..guest_button.."  Respawn"
+   if adapter:can_revive_guest() then
+    local host_style=controller_style(adapter.host_controller_name)
+    local host_button=host_style=="playstation" and "Square" or host_style=="xbox" and "X" or "Left face button"
+    messages[1]=host_button.."  Revive Player 2"
+   end
+  end
+ end
+ self.recovery_prompts=self.recovery_prompts or {}
+ for player=1,2 do
+  local prompt=self.recovery_prompts[player]
+  local message=messages[player]
+  if message then
+   if not valid(prompt) then
+    prompt=prompt_label(self.canvas)
+    self.canvas:AddChildToCanvas(prompt):SetOffsets({Left=12,Top=0,Right=12,Bottom=0})
+    self.recovery_prompts[player]=prompt
+   end
+   prompt.Slot:SetAnchors(Layout.anchors(adapter.layout,player,0.60,0.78))
+   if prompt:GetText():ToString()~=message then prompt:SetText(FText(message)) end
+   prompt:SetVisibility(4)
+  elseif valid(prompt) then
+   prompt:SetVisibility(1)
+  end
+ end
+end
 function HUD:set_interaction_icon(icon)
  if valid(self.reticle_model) and self.reticle_model:GetReticleIcon()~=icon then
   self.reticle_model:SetReticleIcon(icon)
@@ -320,6 +360,10 @@ function HUD:inventory_snapshot(adapter)
  return self.inventory
 end
 function HUD:destroy()
+ for _,prompt in pairs(self.recovery_prompts or {}) do
+  if valid(prompt) then prompt:RemoveFromParent() end
+ end
+ self.recovery_prompts=nil
  if valid(self.subtitle) then self.subtitle:RemoveFromParent() end
  self.subtitle,self.subtitle_text,self.original_subtitle=nil,nil,nil
  if valid(self.interaction_prompt) then self.interaction_prompt:RemoveFromParent() end
@@ -351,6 +395,7 @@ function HUD:update(session)
  if valid(self.original_reticle) then self.original_reticle:SetVisibility(1) end
  self:update_subtitle(visible)
  self:update_interaction_prompt(visible and session.state=="active")
+ self:update_recovery_prompts(visible and session.state=="active")
  if not visible then return end
  self:apply_layout(adapter.layout)
  local values=adapter.actor.ActorValuesPairingComponent
