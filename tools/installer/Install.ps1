@@ -43,6 +43,22 @@ function Assert-RegularPath([string]$Path, [string]$Root) {
     throw "Invalid destination $Path"
 }
 
+function Test-PlaytestFile($Relative, $Destination, $Source, $CurrentHash) {
+    switch -Exact ($Relative) {
+        'ue4ss\Mods\LocalSplitScreen\Scripts\config.lua' {
+            # The default config deployed by the development playtest runner.
+            return $CurrentHash -eq '1F4D8EF9B0BA578F940C60415DAE16197185A5A6E66CC5BF8AA7EAB886FF12EE'
+        }
+        'ue4ss\Mods\LocalSplitScreen\Scripts\main.lua' {
+            # The release build removes the development fixture's fallback ID.
+            $playtest = [IO.File]::ReadAllText($Destination)
+            $preview = $playtest -replace 'preload\.save_id or "[0-9A-F]{32}"', 'preload.save_id'
+            return $preview -ceq [IO.File]::ReadAllText($Source)
+        }
+    }
+    return $false
+}
+
 if (Get-Process -Name 'OblivionRemastered-Win64-Shipping' -ErrorAction SilentlyContinue) {
     throw 'Close Oblivion Remastered before running the installer.'
 }
@@ -90,7 +106,10 @@ foreach ($file in Get-ChildItem -LiteralPath $payload -File -Recurse) {
             # Respect settings from an existing compatible loader.
             continue
         }
-        elseif ($owned[$relative] -ne $current) { throw "An existing file would be overwritten at $destination" }
+        elseif ($owned[$relative] -ne $current -and
+            ($owned.ContainsKey($relative) -or !(Test-PlaytestFile $relative $destination $file.FullName $current))) {
+            throw "An existing file would be overwritten at $destination"
+        }
     }
     $writes += @{ source=$file.FullName; destination=$destination; copy=$copy; path=$relative; hash=$hash }
 }
