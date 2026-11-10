@@ -813,14 +813,15 @@ function Engine:update_camera()
     local yaw,pitch=math.rad(self.yaw),math.rad(self.pitch)
     local host=self:host()
     local first_person=self.guest_pov==0
-    local distance=first_person and -28 or (self.guest_pov==1 and 200 or 320)
-    local eye_height=first_person and self.actor.BaseEyeHeight or 100
+    local distance=first_person and 0 or (self.guest_pov==1 and 200 or 320)
+    local eye_height=first_person and self.actor.BaseEyeHeight+12 or 100
     local position={X=location.X-math.cos(yaw)*math.cos(pitch)*distance,Y=location.Y-math.sin(yaw)*math.cos(pitch)*distance,Z=location.Z+eye_height-math.sin(pitch)*distance}
     if first_person then
         local bone=host.Pawn.CameraBoneName
         if self.actor.MainSkeletalMeshComponent:DoesSocketExist(bone) then
             local head=self.actor.MainSkeletalMeshComponent:GetSocketLocation(bone)
-            position={X=head.X+math.cos(yaw)*28,Y=head.Y+math.sin(yaw)*28,Z=head.Z+3}
+            -- Match the native first-person eye above the camera bone.
+            position={X=head.X,Y=head.Y,Z=head.Z+12}
         end
     end
     local actors={self.actor}
@@ -859,17 +860,19 @@ function Engine:update_camera()
         else self.camera_obstructed=false end
     end
     self.camera.CameraComponent:SetFieldOfView(host.PlayerCameraManager:GetFOVAngle())
-    if self.hidden_first_person~=hide_self then
-        -- Reflected function results are Lua tables containing Unreal parameter
-        -- wrappers (unlike a live TArray property). Unwrap each object first.
-        for _,actor in ipairs(actors) do
-            local components=actor:K2_GetComponentsByClass(StaticFindObject("/Script/Engine.PrimitiveComponent"))
-            for _,element in ipairs(components) do
-                local component=element:get()
-                if valid(component) then component:SetOwnerNoSee(hide_self) end
-            end
+    if hide_self then
+        -- Only the guest controller should hide this world body and its gear.
+        -- Owner visibility alone leaves some head meshes visible at eye level.
+        local addresses={}
+        for index,actor in ipairs(actors) do addresses[index]=actor:GetAddress() end
+        local key=table.concat(addresses,",")
+        if self.hidden_guest_actors~=key then
+            self.pc.HiddenActors=actors
+            self.hidden_guest_actors=key
         end
-        self.hidden_first_person=hide_self
+    elseif self.hidden_guest_actors then
+        self.pc.HiddenActors={}
+        self.hidden_guest_actors=nil
     end
     self.camera:K2_SetActorLocationAndRotation(position,{Pitch=self.pitch,Yaw=self.yaw,Roll=0},false,{},true)
     self.pc:SetControlRotation({Pitch=self.pitch,Yaw=self.yaw,Roll=0})
@@ -1267,7 +1270,7 @@ function Engine:rollback()
         host:EnableInput(host)
     end
     self.host_input_disabled=false
-    self.pc,self.camera,self.before,self.hidden_first_person=nil,nil,nil,nil
+    self.pc,self.camera,self.before,self.hidden_guest_actors=nil,nil,nil,nil
 end
 function Engine:leave()
     if self.dirty then return false,"Save your game first to keep Player 2's belongings." end

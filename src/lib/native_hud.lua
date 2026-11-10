@@ -118,6 +118,13 @@ function HUD:field(name,value,refresh)
  self.model:K2_BroadcastFieldValueChanged({FieldName=FName(name)})
  self.model:K2_BroadcastFieldValueChanged({FieldName=FName("Get"..name)})
 end
+function HUD:copy_compass_markers()
+ -- The campaign supplies the shared map and quest markers. Copy the native
+ -- array so the guest's compass can position them using its own heading.
+ self.model.CompassIconMarkers=self.host_model.CompassIconMarkers
+ self.model:K2_BroadcastFieldValueChanged({FieldName=FName("CompassIconMarkers")})
+ self.model:K2_BroadcastFieldValueChanged({FieldName=FName("GetCompassIconMarkers")})
+end
 function HUD:show_status_bars()
  -- Native full-bar fade timers otherwise leave different subsets visible in
  -- each pane. Keep the same three native bars visible for both local players.
@@ -186,7 +193,8 @@ function HUD:update(session)
  end
  self:field("CurrentMagickaValue",values:GetFloatModifiedActorValue(9))
  self:field("MaxMagickaValue",values:GetFloatBaseActorValue(9))
- self:field("CompassDirectionValue",(adapter.yaw or 0)+90)
+ self:field("CompassDirectionValue",((adapter.yaw or 0)+90)%360)
+ self:copy_compass_markers()
  self:field("bIsOverencumbered",adapter.actor:IsOverEncumbered())
  local snapshot=self:inventory_snapshot(adapter)
  if snapshot then
