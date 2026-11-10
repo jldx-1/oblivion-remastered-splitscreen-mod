@@ -48,6 +48,13 @@ bool dead(P actor) {
     // The stock GetDead command checks the actor and then its life state.
     return get<bool(*)(P)>(vtable,0x350)(actor) && get<bool(*)(P,bool)>(vtable,0x360)(actor,true);
 }
+bool block_stock_death_load() {
+    P player=get<P>(game<P>(0x0941F708),0);
+    if(!player || player!=find(0x14) || !dead(player)) return false;
+    // The game's own pairing handler cancels the armed reload timer.
+    game<void(*)()>(0x0656DC90)();
+    return true;
+}
 bool scanned_actor_dead(P actor,bool include_unconscious) {
     using Predicate=bool(*)(P,bool);
     Predicate check=nullptr;
@@ -399,6 +406,7 @@ bool route(std::string_view packet) {
         if(packet.empty()) return false;
     }
     switch(op) {
+        case 'b': return count==1 && args[0]==1 && block_stock_death_load();
         case 'p': return count==2 && actor_position(args[0],args[1]);
         case 'i': return count==2 && inventory(args[0],args[1]);
         case 'd': return count==2 && door(args[0],args[1]);

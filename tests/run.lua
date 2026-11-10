@@ -378,7 +378,7 @@ end)
 test("player one rejects input from the other physical controller", function()
     local Engine=require("lib.engine")
     local calls={}
-    local host=setmetatable({IsValid=function() return true end},{__index=function(_,name)
+    local host=setmetatable({IsValid=function() return true end,Pawn={IsValid=function() return false end}},{__index=function(_,name)
         return function() calls[#calls+1]=name end
     end})
     local e=Engine.new(native,store,function() end)

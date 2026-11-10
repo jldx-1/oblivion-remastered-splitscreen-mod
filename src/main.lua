@@ -136,7 +136,7 @@ local function tick()
     if not pads then session.status=error; return end
     if native.focused() or simulator then
         local f10=native.focused() and native.key_down(0x79)
-        if f10 and not previous_f10 and adapter:gameplay_input_enabled() then
+        if f10 and not previous_f10 and not adapter.host_downed and adapter:gameplay_input_enabled() then
             adapter:host():OpenOptionsMenuInput_Pressed()
         end
         previous_f10=f10

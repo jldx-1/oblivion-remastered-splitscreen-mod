@@ -12,8 +12,11 @@ local assets={
 local interaction_icons={none=0,pickup=1,object=4,npc=7,door=8}
 local button_textures={
  square="/Game/Art/UI/Icons/Icons_Inputs/Prospero/T_Icon_Prospero_Square.T_Icon_Prospero_Square",
+ cross="/Game/Art/UI/Icons/Icons_Inputs/Prospero/T_Icon_Prospero_Cross.T_Icon_Prospero_Cross",
  x="/Game/Art/UI/Icons/Icons_Inputs/Xbox/T_Icon_Xbox_X.T_Icon_Xbox_X",
+ a="/Game/Art/UI/Icons/Icons_Inputs/Xbox/T_Icon_Xbox_A.T_Icon_Xbox_A",
 }
+local button_names={square="Square",cross="Cross",x="X",a="A"}
 local function controller_style(controller)
  local name=(controller or ""):lower()
  if name:find("dualsense",1,true) or name:find("dualshock",1,true) or name:find("playstation",1,true) then
@@ -202,28 +205,40 @@ local function prompt_label(canvas)
  text:SetShadowColorAndOpacity({R=0,G=0,B=0,A=1})
  return text
 end
-function HUD:mount_interaction_prompt()
- local function make(class)
-  return StaticConstructObject(StaticFindObject("/Script/UMG."..class),self.canvas)
- end
- local box=make("VerticalBox")
- local title=prompt_label(self.canvas)
- box:AddChildToVerticalBox(title):SetHorizontalAlignment(2)
- local row=make("HorizontalBox")
+local function make_widget(canvas,class)
+ return StaticConstructObject(StaticFindObject("/Script/UMG."..class),canvas)
+end
+local function prompt_button(canvas,box)
+ local row=make_widget(canvas,"HorizontalBox")
  box:AddChildToVerticalBox(row):SetHorizontalAlignment(2)
- local size=make("SizeBox")
+ local size=make_widget(canvas,"SizeBox")
  size:SetWidthOverride(22)
  size:SetHeightOverride(22)
- local button=make("Image")
+ local button=make_widget(canvas,"Image")
  size:AddChild(button)
  local slot=row:AddChildToHorizontalBox(size)
  slot:SetPadding({Left=0,Top=0,Right=5,Bottom=0})
  slot:SetVerticalAlignment(2)
- local action=prompt_label(self.canvas)
+ local action=prompt_label(canvas)
  row:AddChildToHorizontalBox(action):SetVerticalAlignment(2)
+ return {row=row,icon=button,size=size,label=action}
+end
+local function set_button_icon(button,key)
+ local path=button_textures[key]
+ local texture=path and StaticFindObject(path)
+ if path and not valid(texture) then LoadAsset(path); texture=StaticFindObject(path) end
+ if valid(texture) then button.icon:SetBrushFromTexture(texture,false) end
+ button.size:SetVisibility(valid(texture) and 4 or 1)
+ return valid(texture)
+end
+function HUD:mount_interaction_prompt()
+ local box=make_widget(self.canvas,"VerticalBox")
+ local title=prompt_label(self.canvas)
+ box:AddChildToVerticalBox(title):SetHorizontalAlignment(2)
+ local button=prompt_button(self.canvas,box)
  self.canvas:AddChildToCanvas(box):SetOffsets({Left=12,Top=0,Right=12,Bottom=0})
- self.interaction_prompt,self.interaction_title,self.interaction_row=box,title,row
- self.interaction_button,self.interaction_button_size,self.interaction_action=button,size,action
+ self.interaction_prompt,self.interaction_title=box,title
+ self.interaction_button=button
 end
 function HUD:interaction_button_label(controller)
  if self.interaction_controller==controller and self.interaction_fallback then
@@ -232,12 +247,7 @@ function HUD:interaction_button_label(controller)
  self.interaction_controller=controller
  local style=controller_style(controller)
  local key=style=="playstation" and "square" or style=="xbox" and "x"
- local path=button_textures[key]
- local texture=path and StaticFindObject(path)
- if path and not valid(texture) then LoadAsset(path); texture=StaticFindObject(path) end
- if valid(texture) then self.interaction_button:SetBrushFromTexture(texture,false) end
- self.interaction_button_size:SetVisibility(valid(texture) and 4 or 1)
- self.interaction_fallback=valid(texture) and "" or (key=="square" and "Square" or key=="x" and "X" or "Left face button")
+ self.interaction_fallback=set_button_icon(self.interaction_button,key) and "" or (button_names[key] or "Left face button")
  return self.interaction_fallback
 end
 function HUD:update_interaction_prompt(visible)
@@ -292,11 +302,11 @@ function HUD:update_interaction_prompt(visible)
   local fallback=self:interaction_button_label(adapter.guest_controller_name)
   local label=fallback~="" and fallback.."  "..action or action
   if self.interaction_action_text~=label then
-   self.interaction_action:SetText(FText(label))
+   self.interaction_button.label:SetText(FText(label))
    self.interaction_action_text=label
   end
  end
- self.interaction_row:SetVisibility(action and 4 or 1)
+ self.interaction_button.row:SetVisibility(action and 4 or 1)
  self.interaction_prompt:SetVisibility(4)
 end
 function HUD:update_recovery_prompts(visible)
@@ -324,45 +334,63 @@ function HUD:update_recovery_prompts(visible)
   elseif valid(shade) then shade:SetVisibility(1) end
 
   local prompt=self.recovery_prompts[player]
-  local message
+  local message,action,key,fallback
   if visible and down[player] then
    local recovery=recoveries[player]
    if recovery then
     message=recovery.respawn and "Respawning…" or ("Player %d is reviving you…"):format(3-player)
    else
     local style=styles[player]
-    local button=style=="playstation" and "Cross" or style=="xbox" and "A" or "Bottom face button"
+    key=style=="playstation" and "cross" or style=="xbox" and "a"
+    fallback="Bottom face button"
+    action="Respawn now"
     local notice=player==2 and adapter.interaction_notice and now<adapter.interaction_notice_until and adapter.interaction_notice
-    message=button.."  Respawn now"
-    if notice then message=notice.."\n"..message end
+    message=notice or ""
     if deadlines[player] then
-     message=("Waiting for revive (%ds)\n"):format(math.max(0,math.ceil((deadlines[player]-now)/1000)))..message
+     local countdown=("Waiting for revive (%ds)"):format(math.max(0,math.ceil((deadlines[player]-now)/1000)))
+     message=notice and countdown.."\n"..notice or countdown
     end
     local hold=adapter.revive_hold
     if hold and hold.by==3-player then
      message=message..("\nReviving (%ds)"):format(math.max(0,math.ceil((hold.until_time-now)/1000)))
     end
    end
-  elseif visible and (player==1 and down[2] and adapter:can_revive_guest() or player==2 and down[1] and adapter:can_revive_host()) then
+  elseif visible and down[3-player] and not recoveries[3-player] then
    local style=styles[player]
-   local button=style=="playstation" and "Square" or style=="xbox" and "X" or "Left face button"
+   key=style=="playstation" and "square" or style=="xbox" and "x"
+   fallback="Left face button"
    local hold=adapter.revive_hold
    local seconds=hold and hold.by==player and math.max(0,math.ceil((hold.until_time-now)/1000)) or 10
-   message=("Hold %s to revive Player %d (%ds)"):format(button,3-player,seconds)
+   local nearby=player==1 and adapter:can_revive_guest() or player==2 and adapter:can_revive_host()
+   message=nearby and "" or "Move closer to revive"
+   action=("Hold %s to revive (%ds)"):format(button_names[key] or fallback,seconds)
   end
   if message then
-   if not valid(prompt) then
-    prompt=prompt_label(self.canvas)
-    local slot=self.canvas:AddChildToCanvas(prompt)
+   if not prompt or not valid(prompt.box) then
+    local box=make_widget(self.canvas,"VerticalBox")
+    local title=prompt_label(self.canvas)
+    box:AddChildToVerticalBox(title):SetHorizontalAlignment(2)
+    prompt={box=box,title=title,button=prompt_button(self.canvas,box)}
+    local slot=self.canvas:AddChildToCanvas(box)
     slot:SetOffsets({Left=12,Top=0,Right=12,Bottom=0})
     slot:SetZOrder(21)
     self.recovery_prompts[player]=prompt
    end
-   prompt.Slot:SetAnchors(Layout.anchors(adapter.layout,player,0.60,0.78))
-   if prompt:GetText():ToString()~=message then prompt:SetText(FText(message)) end
-   prompt:SetVisibility(4)
-  elseif valid(prompt) then
-   prompt:SetVisibility(1)
+   prompt.box.Slot:SetAnchors(Layout.anchors(adapter.layout,player,0.60,0.83))
+   if prompt.message~=message then prompt.title:SetText(FText(message)); prompt.message=message end
+   prompt.title:SetVisibility(message~="" and 4 or 1)
+   local button=prompt.button
+   if action then
+    if button.key~=key or button.has_icon==nil then
+     button.key,button.has_icon=key,set_button_icon(button,key) or false
+    end
+    if down[player] and not button.has_icon then action=(button_names[key] or fallback).."  "..action end
+    if button.action~=action then button.label:SetText(FText(action)); button.action=action end
+   end
+   button.row:SetVisibility(action and 4 or 1)
+   prompt.box:SetVisibility(3)
+  elseif prompt and valid(prompt.box) then
+   prompt.box:SetVisibility(1)
   end
  end
 end
@@ -389,15 +417,18 @@ function HUD:inventory_snapshot(adapter)
  return self.inventory
 end
 function HUD:destroy()
- for _,widgets in ipairs({self.recovery_prompts or {},self.recovery_shades or {}}) do
-  for _,widget in pairs(widgets) do if valid(widget) then widget:RemoveFromParent() end end
+ for _,prompt in pairs(self.recovery_prompts or {}) do
+  if valid(prompt.box) then prompt.box:RemoveFromParent() end
+ end
+ for _,shade in pairs(self.recovery_shades or {}) do
+  if valid(shade) then shade:RemoveFromParent() end
  end
  self.recovery_prompts,self.recovery_shades=nil,nil
  if valid(self.subtitle) then self.subtitle:RemoveFromParent() end
  self.subtitle,self.subtitle_text,self.original_subtitle=nil,nil,nil
  if valid(self.interaction_prompt) then self.interaction_prompt:RemoveFromParent() end
  self.interaction_prompt,self.interaction_prompt_text,self.next_interaction_prompt=nil,nil,nil
- self.interaction_title,self.interaction_row,self.interaction_button,self.interaction_button_size,self.interaction_action=nil,nil,nil,nil,nil
+ self.interaction_title,self.interaction_button=nil,nil
  self.interaction_controller,self.interaction_fallback,self.interaction_action_text=nil,nil,nil
  for _,widgets in ipairs({self.screens or {},self.reticles or {}}) do
   for _,widget in ipairs(widgets) do if valid(widget) then widget:RemoveFromParent() end end

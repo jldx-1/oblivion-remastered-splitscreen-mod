@@ -89,7 +89,7 @@ function Engine:has_inventory_backend()
     end
     return self.inventory_backend
 end
-local backend_op={LSSDoor="d",LSSPrepareCellFixture="h",LSSDialogue="t",
+local backend_op={LSSDoor="d",LSSPrepareCellFixture="h",LSSDialogue="t",LSSBlockDeathLoad="b",
     LSSActorPosition="p",LSSInventory="i"}
 local function plugin_command(command)
     local name,args=command:match("^(LSS%a+)%s+(.+)$")
@@ -1320,14 +1320,32 @@ function Engine:request_host_recovery(respawn)
     return true
 end
 
+function Engine:close_stock_death_menu()
+    -- The same widget also handles normal Save and Load. Close only the
+    -- instance opened by the stock death timer (FromDeath = 3).
+    for _,menu in ipairs(FindAllOf("WBP_ModernMenu_SaveLoad_C") or {}) do
+        if valid(menu) and menu:IsActivated() then
+            local model=menu.VSaveLoadMenuViewModel
+            if valid(model) and model.CachedOpeningSource==3 then menu:DeactivateWidget() end
+        end
+    end
+end
+
 function Engine:input_host_recovery(host,buttons)
     local pawn=host.Pawn
     if self.loading or not paired(pawn) then return false end
     local dead=pawn:IsDead()
     if not dead and not self.host_downed then return false end
+    if not self:gameplay_input_enabled() then self:close_stock_death_menu() end
     if self.revive_hold and self.revive_hold.by==1 then self.revive_hold=nil end
     local now=self.native.clock_ms()
     local values=pawn.ActorValuesPairingComponent
+    if dead and now>=(self.next_death_load_block or 0) then
+        self.next_death_load_block=now+500
+        if self.native.backend_protocol and self.native.backend_protocol()==2 then
+            self:command("LSSBlockDeathLoad 1")
+        end
+    end
     if not self.host_downed then
         self.host_downed=true
         self.host_revive_until=now+revive_window
@@ -1343,6 +1361,7 @@ function Engine:input_host_recovery(host,buttons)
     if recovery then
         if not dead and values:GetFloatModifiedActorValue(8)>0 then
             self.host_downed,self.host_revive_until,self.host_recovery=nil,nil,nil
+            self.next_death_load_block=nil
         elseif not dead and not recovery.healing then
             self:command("player.forceav health "..self.host_health)
             recovery.healing=true
@@ -1359,6 +1378,7 @@ function Engine:input_host_recovery(host,buttons)
         if expired and self.revive_hold and self.revive_hold.by==2 then self.host_revive_until=now end
     elseif values:GetFloatModifiedActorValue(8)>0 then
         self.host_downed,self.host_revive_until=nil,nil
+        self.next_death_load_block=nil
     end
     self.host_buttons=buttons
     return true
@@ -1386,10 +1406,12 @@ end
 
 function Engine:input_host(pad,dt)
     local host=self:host()
-    if not valid(host) or not pad or not pad.connected or pad.slot~=self:host_slot() then return false end
-    self.host_controller_name=pad.simulated and "DualSense" or pad.name
-    local buttons=pad.buttons or 0
+    if not valid(host) then return false end
+    local connected=pad and pad.connected and pad.slot==self:host_slot()
+    if connected then self.host_controller_name=pad.simulated and "DualSense" or pad.name end
+    local buttons=connected and (pad.buttons or 0) or 0
     if self:input_host_recovery(host,buttons) then return true end
+    if not connected then return false end
     if self.guest_interaction and (buttons~=0 or math.abs(pad.rx or 0)>5000 or math.abs(pad.ry or 0)>5000
         or math.abs(pad.lx or 0)>5000 or math.abs(pad.ly or 0)>5000) then self:cancel_guest_interaction() end
     if buttons & 16384==0 then self:release_activation(1) end
@@ -1513,7 +1535,7 @@ function Engine:input(pad,dt)
         self.last_buttons=buttons
         return true
     end
-    if buttons & 16~=0 and (self.last_buttons or 0) & 16==0 then
+    if not self.host_downed and buttons & 16~=0 and (self.last_buttons or 0) & 16==0 then
         if self.door_preload then require("lib.door_preload").cancel_crossing(self) end
         self.actor.PairedPawnMovementComponent:ResetOffsetMovementInput()
         self:set_guest_speed()
@@ -1708,6 +1730,7 @@ function Engine:rollback()
     self.interaction_notice=nil
     self.guest_downed,self.guest_revive_until,self.guest_recovery=nil,nil,nil
     self.host_downed,self.host_revive_until,self.host_recovery=nil,nil,nil
+    self.next_death_load_block=nil
     self.revive_hold=nil
     self.hotel_life,self.hotel_life_request,self.hotel_life_next=nil,nil,nil
     self:cancel_guest_interaction()
