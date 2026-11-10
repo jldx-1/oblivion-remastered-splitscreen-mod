@@ -68,6 +68,10 @@ function Rig:sync(key,source,leader)
     end
     copy:SetCollisionEnabled(0)
     copy:SetCastShadow(false)
+    -- The copy belongs to one view. Keep it out of the shared lighting scene.
+    copy:SetAffectDynamicIndirectLighting(false)
+    copy:SetAffectDistanceFieldLighting(false)
+    copy:SetVisibleInRayTracing(false)
     copy:SetOwnerNoSee(true)
     mesh={source=source,asset=asset,copy=copy}
     self.meshes[key]=mesh

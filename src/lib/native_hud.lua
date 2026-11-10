@@ -143,6 +143,37 @@ function HUD:show_status_bars()
   end
  end
 end
+function HUD:update_subtitle(visible)
+ if visible and not valid(self.original_subtitle) then
+  self.original_subtitle=original("WBP_ModernHud_Subtitle_C")
+ end
+ local source=visible and valid(self.original_subtitle) and self.original_subtitle
+ local model=source and source.VHUDSubtitleViewModel
+ local line=valid(model) and model.bSubtitleVisibility and model.Subtitle:ToString()
+ if not line or line=="" then
+  if valid(self.subtitle) then self.subtitle:SetVisibility(1) end
+  self.subtitle_text=nil
+  return
+ end
+ if not valid(self.subtitle) then
+  self.subtitle=StaticConstructObject(StaticFindObject("/Script/UMG.TextBlock"),self.canvas)
+  if not valid(self.subtitle) then return end
+  local font=self.subtitle.Font
+  font.Size=15
+  self.subtitle:SetFont(font)
+  self.subtitle:SetJustification(1)
+  self.subtitle:SetAutoWrapText(true)
+  self.subtitle:SetShadowOffset({X=1,Y=1})
+  self.subtitle:SetShadowColorAndOpacity({R=0,G=0,B=0,A=1})
+  self.canvas:AddChildToCanvas(self.subtitle):SetOffsets({Left=18,Top=0,Right=18,Bottom=0})
+ end
+ self.subtitle.Slot:SetAnchors(Layout.anchors(self.adapter.layout,2,0.78,0.90))
+ if self.subtitle_text~=line then
+  self.subtitle:SetText(model.Subtitle)
+  self.subtitle_text=line
+ end
+ self.subtitle:SetVisibility(4)
+end
 function HUD:inventory_snapshot(adapter)
  if not adapter:has_inventory_backend() then return end
  if adapter.recover_equipment then return self.inventory end
@@ -161,6 +192,8 @@ function HUD:inventory_snapshot(adapter)
  return self.inventory
 end
 function HUD:destroy()
+ if valid(self.subtitle) then self.subtitle:RemoveFromParent() end
+ self.subtitle,self.subtitle_text,self.original_subtitle=nil,nil,nil
  for _,widgets in ipairs({self.screens or {},self.reticles or {}}) do
   for _,widget in ipairs(widgets) do if valid(widget) then widget:RemoveFromParent() end end
  end
@@ -184,6 +217,7 @@ function HUD:update(session)
  end
  if valid(self.original) then self.original:SetVisibility(1) end
  if valid(self.original_reticle) then self.original_reticle:SetVisibility(1) end
+ self:update_subtitle(visible)
  if not visible then return end
  self:apply_layout(adapter.layout)
  local values=adapter.actor.ActorValuesPairingComponent

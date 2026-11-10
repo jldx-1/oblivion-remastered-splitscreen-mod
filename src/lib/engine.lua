@@ -866,6 +866,63 @@ local function clip_to_other_player(start,finish,pawn)
     local t=math.max(0,low-0.02)
     return {X=start.X+t*dx,Y=start.Y+t*dy,Z=start.Z+t*dz}
 end
+function Engine:restore_guest_npc_animation(keep)
+    for address,record in pairs(self.guest_npc_animation or {}) do
+        if not keep or not keep[address] then
+            local mesh=record.mesh
+            if valid(mesh) then
+                mesh:SetAutoRegisterWithBudgetAllocator(true)
+                mesh.VisibilityBasedAnimTickOption=record.visibility
+                mesh.bEnableUpdateRateOptimizations=record.optimized
+            end
+            self.guest_npc_animation[address]=nil
+        end
+    end
+end
+function Engine:update_guest_npc_animation(host,guest_position)
+    local now=self.native.clock_ms()
+    if self.next_guest_npc_animation and now<self.next_guest_npc_animation then return end
+    self.next_guest_npc_animation=now+500
+    local host_position=host.Pawn:K2_GetActorLocation()
+    local function distance_squared(a,b)
+        return (a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2
+    end
+    self.trace_library=self.trace_library or StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
+    local class=StaticFindObject("/Script/Altar.VPairedCharacter")
+    local budgeted=StaticFindObject("/Script/AnimationBudgetAllocator.SkeletalMeshComponentBudgeted")
+    local nearby,candidates,keep={},{},{}
+    self.trace_library:SphereOverlapActors(self.actor,guest_position,1000,{2},class,{self.actor,host.Pawn},nearby)
+    self.guest_npc_animation=self.guest_npc_animation or {}
+    for _,entry in ipairs(nearby) do
+        local npc=entry:get()
+        if paired(npc) and not npc:IsDead() then
+            local mesh=npc.MainSkeletalMeshComponent
+            if valid(mesh) and mesh:IsA(budgeted) then
+                local address=mesh:GetAddress()
+                local p=npc:K2_GetActorLocation()
+                local distance=distance_squared(guest_position,p)
+                if distance_squared(host_position,p)>distance+600^2 and
+                    (self.guest_npc_animation[address] or (mesh.bEnable and mesh.bAutoRegisterWithBudgetAllocator)) then
+                    candidates[#candidates+1]={mesh=mesh,address=address,distance=distance}
+                end
+            end
+        end
+    end
+    table.sort(candidates,function(a,b) return a.distance<b.distance end)
+    for index=1,math.min(4,#candidates) do
+        local candidate=candidates[index]
+        local mesh,address=candidate.mesh,candidate.address
+        keep[address]=true
+        if not self.guest_npc_animation[address] then
+            self.guest_npc_animation[address]={mesh=mesh,visibility=mesh.VisibilityBasedAnimTickOption,
+                optimized=mesh.bEnableUpdateRateOptimizations}
+            mesh:SetAutoRegisterWithBudgetAllocator(false)
+            mesh.VisibilityBasedAnimTickOption=0
+            mesh.bEnableUpdateRateOptimizations=false
+        end
+    end
+    self:restore_guest_npc_animation(keep)
+end
 function Engine:update_camera()
     if not valid(self.actor) or not valid(self.camera) then return end
     local location=self.actor:K2_GetActorLocation()
@@ -919,6 +976,7 @@ function Engine:update_camera()
     end
     self.camera:K2_SetActorLocationAndRotation(position,{Pitch=self.pitch,Yaw=self.yaw,Roll=0},false,{},true)
     self.pc:SetControlRotation({Pitch=self.pitch,Yaw=self.yaw,Roll=0})
+    self:update_guest_npc_animation(host,location)
     if not self.host_body_failed and self.native.set_weak_component then
         self.host_body=self.host_body or HostBody.new(self.native)
         local ok,err=pcall(self.host_body.update,self.host_body,host,self.pc,self.native.clock_ms())
@@ -1100,10 +1158,9 @@ function Engine:input(pad,dt)
     local movement=self.actor.PairedPawnMovementComponent
     local speed
     if (x~=0 or y~=0) and movement:IsMovingOnGround() and not self.sneaking then
-        local host=self:host().Pawn.PairedPawnMovementComponent
-        if movement:IsSprinting() then speed=host:GetMaxGroundSprintSpeed()
-        elseif running then speed=host:GetMaxGroundRunSpeed()
-        else speed=host:GetMaxGroundWalkSpeed() end
+        if movement:IsSprinting() then speed=movement:GetMaxGroundSprintSpeed()
+        elseif running then speed=movement:GetMaxGroundRunSpeed()
+        else speed=movement:GetMaxGroundWalkSpeed() end
     end
     self:set_guest_speed(speed)
     -- NPC locomotion consumes the paired component's offset, rather than the
@@ -1192,6 +1249,7 @@ function Engine:poll_guest_equipment()
 end
 function Engine:wait_for_guest()
     if not self.guest_unloaded then
+        self:restore_guest_npc_animation()
         -- Remove the local view while its controller still exists. Once the
         -- game destroys that controller, RemovePlayer cannot release its slot.
         local before=self:guest_inventory_snapshot()
@@ -1235,6 +1293,7 @@ function Engine:wait_for_guest()
 end
 function Engine:suspend()
     self:cancel_guest_interaction()
+    self:restore_guest_npc_animation()
     self.host_door,self.guest_door=nil,nil
     if self.dialogues then self.dialogues:close(1); self.dialogues:close(2) end
     if self.door_preload then require("lib.door_preload").cancel_crossing(self) end
@@ -1266,6 +1325,7 @@ end
 function Engine:resume(slot) self.slot=slot; self.last_buttons=0 end
 function Engine:rollback()
     self:cancel_guest_interaction()
+    self:restore_guest_npc_animation()
     self.host_door,self.host_travel=nil,nil
     HostCrossing.cancel(self)
     self.host_background_streams=nil
