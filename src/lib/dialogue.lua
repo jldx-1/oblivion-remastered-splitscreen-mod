@@ -5,6 +5,7 @@ Dialogue.__index=Dialogue
 local json=require("lib.json")
 local Layout=require("lib.layout")
 local response_table="/Game/Localization/StringTables/ST_ResponseTexts.ST_ResponseTexts"
+local dialogue_font="/Game/UI/CommonStyle/Fonts/Font_Kingthings_Localized.Font_Kingthings_Localized"
 local topics={{0xC8,"Greeting"},{0x1FDA6,"Imperial City"},{0xD7,"Rumors"},
     {0x45F63,"Give two gold"},{0xD4,"Goodbye"}}
 local races={[0x907]="imperial",[0xD43]="redguard",[0x191C0]="orc",[0x191C1]="dark_elf",
@@ -25,17 +26,23 @@ end
 function Dialogue:mount(player,panel)
     if valid(panel.frame) then return end
     local frame=make(self.tree,"Border")
-    frame:SetBrushColor({R=0.045,G=0.031,B=0.019,A=0.95})
+    frame:SetBrushColor({R=0.96,G=0.90,B=0.77,A=0.96})
     frame:SetPadding({Left=18,Top=12,Right=18,Bottom=12})
     local slot=self.canvas:AddChildToCanvas(frame)
     slot:SetOffsets({Left=18,Top=0,Right=18,Bottom=0})
     local box=make(self.tree,"VerticalBox")
     frame:AddChild(box)
     panel.frame,panel.title,panel.body=frame,make(self.tree,"TextBlock"),make(self.tree,"TextBlock")
+    local stock_font=StaticFindObject(dialogue_font)
+    if not valid(stock_font) then LoadAsset(dialogue_font); stock_font=StaticFindObject(dialogue_font) end
     for _,label in ipairs({panel.title,panel.body}) do
-        label:SetColorAndOpacity({SpecifiedColor={R=0.96,G=0.89,B=0.75,A=1},ColorUseRule=0})
+        label:SetColorAndOpacity({SpecifiedColor={R=0,G=0,B=0,A=1},ColorUseRule=0})
         local font=label.Font
-        font.Size=13
+        if valid(stock_font) then
+            font.FontObject=stock_font
+            font.TypefaceFontName=FName("Regular-Regular")
+        end
+        font.Size=24
         label:SetFont(font)
         label:SetAutoWrapText(true)
         box:AddChildToVerticalBox(label):SetPadding({Left=0,Top=0,Right=0,Bottom=4})
@@ -82,9 +89,10 @@ function Dialogue:start(player,speaker)
 
     local panel=self.panels[player]
     self:mount(player,panel)
-    panel.frame.Slot:SetAnchors(Layout.anchors(self.adapter.layout,player,0.66,0.91))
+    panel.frame.Slot:SetAnchors(Layout.anchors(self.adapter.layout,player,0.60,0.94))
     local session={speaker=speaker,listener=listener,speaker_id=speaker_id,listener_id=listener_id,
-        pending={},choices={},index=1,deadline=self.adapter.native.clock_ms()+3000}
+        pending={},choices={},index=1,deadline=self.adapter.native.clock_ms()+3000,
+        read_only=not self.adapter.experimental_dialogue}
     panel.session=session
     local base=speaker.TESRefComponent.TESForm
     local name=valid(base) and base.FullName:ToString() or "Conversation"
@@ -100,9 +108,11 @@ function Dialogue:start(player,speaker)
     local signed=listener_id>=0x80000000 and listener_id-0x100000000 or listener_id
     local commands={}
     for _,topic in ipairs(topics) do
-        self.request=self.request+1
-        session.pending[#session.pending+1]={id=self.request,topic=topic}
-        commands[#commands+1]=("LSSDialogue %d %d %d %d"):format(self.request,speaker_id,signed,topic[1])
+        if not session.read_only or topic[1]~=0x45F63 then
+            self.request=self.request+1
+            session.pending[#session.pending+1]={id=self.request,topic=topic}
+            commands[#commands+1]=("LSSDialogue %d %d %d %d"):format(self.request,speaker_id,signed,topic[1])
+        end
     end
     self.adapter:command(commands)
     return true
@@ -219,7 +229,7 @@ local function render_choices(panel,session)
         rows[#rows+1]=(i==session.index and ">  " or "    ")..choice.name
     end
     if #rows==0 then rows[1]="No topics available" end
-    rows[#rows+1]="D-pad  Select     Cross  Read     Circle  Close"
+    rows[#rows+1]="D-pad  Select     Cross  Listen     Circle  Close"
     set_text(panel,table.concat(rows,"\n"))
 end
 
@@ -289,7 +299,7 @@ function Dialogue:input(player,pressed)
         if pressed & 4096~=0 and session.lines and session.line_index<#session.lines then
             session.line_index=session.line_index+1
             self:show_line(panel,session)
-        elseif pressed & 4096~=0 and session.selected_info then
+        elseif pressed & 4096~=0 and session.selected_info and not session.read_only then
             self:request_selection(panel,session,false)
         elseif pressed & (4096 | 8192)~=0 then
             self:stop_voice(session)

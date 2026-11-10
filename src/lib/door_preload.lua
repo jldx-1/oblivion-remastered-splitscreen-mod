@@ -9,7 +9,7 @@ local function request(adapter,pending,now)
     adapter:command(("LSSDoor %d %d"):format(pending.fixture.entrance,pending.request))
 end
 
-function Preload.begin(adapter,source,source_actor,link)
+function Preload.begin(adapter,source,source_actor,link,background)
     local fixture=Fixtures.match(source,link)
     if not fixture or source~=fixture.entrance or not link.target_cell or link.target_cell.state~=0
         or adapter.experimental_door_preload then return end
@@ -17,14 +17,20 @@ function Preload.begin(adapter,source,source_actor,link)
     if not save_id then return end
     local now=adapter.native.clock_ms()
     local point=source_actor:K2_GetActorLocation()
-    local token={host=adapter:host().Pawn:GetAddress(),save_id=save_id,deadline=now+4000,
-        movement=Movement.capture(adapter)}
-    local pending={actor=adapter.actor_ref,save_id=save_id,token=token,origin={X=point.X,Y=point.Y,Z=point.Z},
+    local pending={actor=adapter.actor_ref,save_id=save_id,origin={X=point.X,Y=point.Y,Z=point.Z},
         request=430000000+now%100000000,deadline=now+14000,fixture=fixture}
+    if background then
+        local cells=require("lib.background_cell")
+        pending.stream=cells.stream(adapter:host().Pawn,fixture)
+        if not pending.stream then return end
+    else
+        pending.token={host=adapter:host().Pawn:GetAddress(),save_id=save_id,deadline=now+4000,
+            movement=Movement.capture(adapter)}
+        adapter.experimental_door_preload=pending.token
+        adapter:command(("LSSPrepareCellFixture %d 0"):format(fixture.cell))
+    end
     adapter.door_preload=pending
-    adapter.experimental_door_preload=token
     adapter.door_preload_status=nil
-    adapter:command(("LSSPrepareCellFixture %d 0"):format(fixture.cell))
     request(adapter,pending,now)
 end
 
@@ -56,12 +62,21 @@ function Preload.poll(adapter,now)
     local raw=adapter.native.backend_door(fixture.entrance)
     local state=raw and json.decode(raw)
     local door=state and state.actor_ref==fixture.entrance and state.request==pending.request and state.door
+    local background=pending.stream~=nil
     if door and door.source_paired and door.source_cell.attached and door.destination_ref==fixture.exit
         and door.destination_cell==fixture.cell and not door.has_lock_data and not door.has_script
-        and not door.has_random_destination and pending.token.finished then
+        and not door.has_random_destination and (background or pending.token.finished) then
+        if background and not pending.preparing and door.target_cell.state==0
+            and pending.stream:IsValid() and pending.stream:IsLevelVisible()
+            and require("lib.background_cell").registered(fixture) then
+            pending.preparing=true
+            adapter:command(("LSSPrepareCellFixture %d 2"):format(fixture.cell))
+            request(adapter,pending,now)
+            return
+        end
         if not pending.attaching and door.target_cell.state==3 and Fixtures.visible(fixture) then
             pending.attaching=true
-            adapter:command(("LSSPrepareCellFixture %d 1"):format(fixture.cell))
+            adapter:command(("LSSPrepareCellFixture %d %d"):format(fixture.cell,background and 3 or 1))
             request(adapter,pending,now)
             return
         end
@@ -69,9 +84,12 @@ function Preload.poll(adapter,now)
             local cross=not pending.cancelled and adapter:guest_door_target()==fixture.entrance
             local token=pending.token
             Preload.stop(adapter)
-            adapter.door_preload_status={result=cross and "ready" or "cancelled",
-                duration=token.finished-token.started,host_settings=token.movement.host.restored,
-                guest_settings=token.movement.guest.restored}
+            adapter.door_preload_status={result=cross and "ready" or "cancelled"}
+            if token then
+                adapter.door_preload_status.duration=token.finished-token.started
+                adapter.door_preload_status.host_settings=token.movement.host.restored
+                adapter.door_preload_status.guest_settings=token.movement.guest.restored
+            end
             if cross then require("lib.door_travel").begin(adapter,fixture.entrance,state.cell_ref,door) end
             return
         end

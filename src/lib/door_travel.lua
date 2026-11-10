@@ -46,7 +46,7 @@ local function finish(adapter,pending,reason)
     end)
     release_hold(adapter,pending)
     if not ok then adapter.log("Player 2 door recovery failed "..tostring(err)) end
-    adapter.log(reason or "Player 2 crossed the experimental loading door")
+    adapter.log(reason or "Player 2 crossed the loading door")
 end
 
 function Travel.cancel(adapter)

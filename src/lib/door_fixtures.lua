@@ -28,17 +28,18 @@ function Fixtures.door_reference(adapter,door)
         local id=component:GetHexFormRefID()
         if type(id)~="string" then id=id:ToString() end
         id=id:gsub("^0[xX]","")
-        if #id==8 and id:match("^%x+$") then return tonumber(id,16) end
-        return
+        if #id==8 and id:match("^%x+$") and tonumber(id,16)~=0 then return tonumber(id,16) end
     end
-    if not adapter.experimental_background_sewer or os.getenv("LSS_KEEP_PLAZA_GRID_FIXTURE")~="1"
-        or component.FormIDInstance~=0 then return end
+    if component.FormIDInstance~=0 then return end
+    local fixture=adapter.experimental_background_sewer and os.getenv("LSS_KEEP_PLAZA_GRID_FIXTURE")=="1"
+    if not fixture and not adapter.hotel_guest_travel then return end
     -- Background instances can have the exterior runtime cell name. The
     -- authored GUID and instance package still identify these exact doors.
     local name=door:GetFullName()
     local guid=component.Guid
-    return streamed_reference(streamed_door,name,guid)
-        or adapter.experimental_upstairs and streamed_reference(streamed_stair_door,name,guid)
+    local ref=streamed_reference(streamed_door,name,guid)
+    if ref==hotel.exit or fixture and ref then return ref end
+    if fixture and adapter.experimental_upstairs then return streamed_reference(streamed_stair_door,name,guid) end
 end
 
 function Fixtures.rendered_door(adapter,ref)

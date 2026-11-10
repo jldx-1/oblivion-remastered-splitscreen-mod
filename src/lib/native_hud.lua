@@ -174,6 +174,62 @@ function HUD:update_subtitle(visible)
  end
  self.subtitle:SetVisibility(4)
 end
+function HUD:update_interaction_prompt(visible)
+ local adapter=self.adapter
+ local inventory=adapter.inventories and adapter.inventories[2]
+ local dialogue=adapter.dialogues and adapter.dialogues.panels[2].session
+ if not visible or adapter.guest_unloaded or adapter.guest_dialogue or dialogue
+     or (inventory and inventory.open) or adapter.guest_crossing then
+  if valid(self.interaction_prompt) then self.interaction_prompt:SetVisibility(1) end
+  self.next_interaction_prompt=nil
+  return
+ end
+ local now=adapter.native.clock_ms()
+ if self.next_interaction_prompt and now<self.next_interaction_prompt then return end
+ self.next_interaction_prompt=now+100
+ local message=adapter.interaction_notice and now<adapter.interaction_notice_until and adapter.interaction_notice
+ if adapter.guest_door or adapter.door_preload then message="Opening door…" end
+ if not message then
+  local target=adapter:guest_interaction_target()
+  if target then
+   local reference=target.actor.TESRefComponent
+   local form=valid(reference) and reference.TESForm
+   local name=valid(form) and form.FullName:ToString()
+   if name and name:sub(1,7)=="LOC_FN_" then
+    local table_id=FName("/Game/Localization/StringTables/ST_FullNames.ST_FullNames")
+    local texts=StaticFindObject("/Script/Engine.Default__KismetTextLibrary")
+    name=texts:TextFromStringTable(table_id,name):ToString()
+   end
+   if not name or name=="" or name:find("MISSING STRING",1,true) then
+    name=({npc="Character",door="Door",object="Object",pickup="Item"})[target.kind]
+   end
+   local action=({npc="Talk",door="Open",object="Use",pickup="Take"})[target.kind]
+   message=name.."\n□  "..action
+  end
+ end
+ if not message then
+  if valid(self.interaction_prompt) then self.interaction_prompt:SetVisibility(1) end
+  return
+ end
+ if not valid(self.interaction_prompt) then
+  local prompt=StaticConstructObject(StaticFindObject("/Script/UMG.TextBlock"),self.canvas)
+  if not valid(prompt) then return end
+  local font=prompt.Font
+  font.Size=16
+  prompt:SetFont(font)
+  prompt:SetJustification(1)
+  prompt:SetShadowOffset({X=1,Y=2})
+  prompt:SetShadowColorAndOpacity({R=0,G=0,B=0,A=1})
+  self.canvas:AddChildToCanvas(prompt):SetOffsets({Left=12,Top=0,Right=12,Bottom=0})
+  self.interaction_prompt=prompt
+ end
+ self.interaction_prompt.Slot:SetAnchors(Layout.anchors(adapter.layout,2,0.56,0.72))
+ if message~=self.interaction_prompt_text then
+  self.interaction_prompt:SetText(FText(message))
+  self.interaction_prompt_text=message
+ end
+ self.interaction_prompt:SetVisibility(4)
+end
 function HUD:inventory_snapshot(adapter)
  if not adapter:has_inventory_backend() then return end
  if adapter.recover_equipment then return self.inventory end
@@ -194,6 +250,8 @@ end
 function HUD:destroy()
  if valid(self.subtitle) then self.subtitle:RemoveFromParent() end
  self.subtitle,self.subtitle_text,self.original_subtitle=nil,nil,nil
+ if valid(self.interaction_prompt) then self.interaction_prompt:RemoveFromParent() end
+ self.interaction_prompt,self.interaction_prompt_text,self.next_interaction_prompt=nil,nil,nil
  for _,widgets in ipairs({self.screens or {},self.reticles or {}}) do
   for _,widget in ipairs(widgets) do if valid(widget) then widget:RemoveFromParent() end end
  end
@@ -218,6 +276,7 @@ function HUD:update(session)
  if valid(self.original) then self.original:SetVisibility(1) end
  if valid(self.original_reticle) then self.original_reticle:SetVisibility(1) end
  self:update_subtitle(visible)
+ self:update_interaction_prompt(visible and session.state=="active")
  if not visible then return end
  self:apply_layout(adapter.layout)
  local values=adapter.actor.ActorValuesPairingComponent

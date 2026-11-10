@@ -438,7 +438,7 @@ function Engine:press_guest_activation(speaker)
     return true
 end
 function Engine:request_guest_activation(target,point,speaker)
-    if self.guest_interaction then return false end
+    if self.activation or self.guest_dialogue or self.guest_interaction then return false end
     local cached=self:host_activation_target_address()
     if cached==target:GetAddress() then return self:press_guest_activation(speaker) end
     if cached==nil then return false end
@@ -460,29 +460,22 @@ end
 function Engine:poll_guest_interaction()
     local pending=self.guest_interaction
     if not pending then return end
-    if self.native.clock_ms()>=pending.deadline or not valid(pending.target) or not self:gameplay_input_enabled() then
-        return self:cancel_guest_interaction()
+    if not valid(pending.target) or not self:gameplay_input_enabled() then return self:cancel_guest_interaction() end
+    if self.native.clock_ms()>=pending.deadline then
+        self:cancel_guest_interaction()
+        self:guest_interaction_notice("The target did not respond.")
+        return
     end
     if self:host_activation_target_address()~=pending.target:GetAddress() then return end
     self.guest_interaction=nil
     self:press_guest_activation(pending.speaker)
     if not self.loading and valid(pending.host) then pending.host:SetControlRotation(pending.rotation) end
 end
-function Engine:begin_shared_dialogue()
-    if self.activation or self.guest_dialogue then return true end
-    local host=self:host()
-    -- Player 1 can stand between Player 2 and the NPC. Exclude the other
-    -- player only from this dialogue trace. World geometry still blocks it.
-    local ref,guest_target=self:guest_target(350,host.Pawn)
-    if not valid(guest_target) or not guest_target:IsA(StaticFindObject("/Script/Altar.VPairedCharacter"))
-        or guest_target:IsDead() or guest_target:IsUnconscious() then return end
-    -- Native conversations still use the shared campaign's player and camera.
-    local p=guest_target:K2_GetActorLocation()
-    self:request_guest_activation(guest_target,{X=p.X,Y=p.Y,Z=p.Z+50},tonumber(ref,16))
-    return true
-end
-function Engine:activate_shared_object()
-    if self.activation or self.guest_dialogue then return false end
+
+local pickup_forms={"TESObjectMISC","TESObjectWEAP","TESObjectARMO","TESObjectCLOT",
+    "TESAmmo","TESIngredientItem","TESAlchemyItem","TESObjectAPPA","TESKey"}
+
+function Engine:guest_interaction_target()
     local start,direction=self:guest_aim()
     local stop={X=start.X+350*direction.X,Y=start.Y+350*direction.Y,Z=start.Z+350*direction.Z}
     local host=self:host()
@@ -491,14 +484,84 @@ function Engine:activate_shared_object()
     ignore_actor(ignore,host.Pawn)
     local trace=StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
     local hit,color={},{R=0,G=0,B=0,A=0}
-    if not trace:LineTraceSingle(self.actor,start,stop,0,false,ignore,0,hit,true,color,color,0) then return false end
-    local object=hit.HitObjectHandle.Actor:Get()
-    if not valid(object) or not object:IsA(StaticFindObject("/Script/Altar.VActor"))
-        or object:IsA(StaticFindObject("/Script/Altar.VDoor"))
-        or object:IsA(StaticFindObject("/Script/Altar.VPairedPawn")) then return false end
-    local ref=object.TESRefComponent
-    if not valid(ref) or not ref.bIsPaired then return false end
-    return self:request_guest_activation(object,hit.Location)
+    if trace:LineTraceSingle(self.actor,start,stop,0,false,ignore,0,hit,true,color,color,0) then
+        local object=hit.HitObjectHandle and hit.HitObjectHandle.Actor:Get()
+        if valid(object) and object:IsA(StaticFindObject("/Script/Altar.VDoor")) then
+            local ref=DoorFixtures.door_reference(self,object)
+            if ref and ref~=0 and not object.bIsDestroyed then return {actor=object,kind="door",ref=ref} end
+            return
+        end
+        if valid(object) and object:IsA(StaticFindObject("/Script/Altar.VActor"))
+            and not object:IsA(StaticFindObject("/Script/Altar.VPairedPawn")) then
+            local component=object.TESRefComponent
+            if valid(component) and component.bIsPaired then
+                local form=component.TESForm
+                if valid(form) then
+                    for _,name in ipairs(pickup_forms) do
+                        local class=StaticFindObject("/Script/Altar."..name)
+                        if valid(class) and form:IsA(class) then
+                            local ref=str(component:GetHexFormRefID()):upper():gsub("^0X","")
+                            if ref:match("^%x%x%x%x%x%x%x%x$") and ref~="00000000" then
+                                return {actor=object,kind="pickup",ref=ref}
+                            end
+                            break
+                        end
+                    end
+                end
+                return {actor=object,kind="object",point=hit.Location}
+            end
+        end
+    end
+    local ref,speaker=self:guest_target(350,host.Pawn)
+    if valid(speaker) and speaker:IsA(StaticFindObject("/Script/Altar.VPairedCharacter"))
+        and not speaker:IsDead() and not speaker:IsUnconscious() then
+        local p=speaker:K2_GetActorLocation()
+        return {actor=speaker,kind="npc",ref=tonumber(ref,16),point={X=p.X,Y=p.Y,Z=p.Z+50}}
+    end
+end
+
+function Engine:guest_interaction_notice(message)
+    self.interaction_notice=message
+    self.interaction_notice_until=self.native.clock_ms()+2400
+end
+
+function Engine:interact_guest()
+    if self.activation or self.guest_dialogue or self.guest_door or self.door_preload then return end
+    local target=self:guest_interaction_target()
+    if not target then return end
+    self.interaction_notice=nil
+    if target.kind=="door" then
+        self:begin_guest_door(target.ref)
+    elseif target.kind=="pickup" then
+        self:command(("%s.activate %s 1"):format(target.ref,self.actor_ref))
+        self.dirty=true
+    elseif target.kind=="npc" and self.dialogues and self.dialogues:start(2,target.actor) then
+        return
+    elseif not self:request_guest_activation(target.actor,target.point,target.ref) then
+        self:guest_interaction_notice("This target cannot be activated from Player 2’s view.")
+    end
+end
+function Engine:has_guest_dialogue()
+    if self.experimental_dialogue then return true end
+    if self.guest_dialogue_available~=nil then return self.guest_dialogue_available end
+    local now=self.native.clock_ms()
+    if not self.guest_dialogue_capability then
+        local _,reason=self.native.backend_dialogue(0)
+        if reason=="Native dialogue backend is not loaded" then
+            self.guest_dialogue_available=false
+            return false
+        end
+        self.guest_dialogue_capability={request=2000000000+now%100000000,deadline=now+2000}
+        self:command("LSSDialogue "..self.guest_dialogue_capability.request)
+        return false
+    end
+    local capability=self.guest_dialogue_capability
+    local raw=self.native.backend_dialogue(capability.request)
+    if raw then
+        local reply=json.decode(raw)
+        self.guest_dialogue_available=reply.request==capability.request and reply.guest_read_only==true
+    elseif now>=capability.deadline then self.guest_dialogue_available=false end
+    return self.guest_dialogue_available
 end
 local function aimed_door(adapter,pawn,other,start,direction)
     local stop={X=start.X+350*direction.X,Y=start.Y+350*direction.Y,Z=start.Z+350*direction.Z}
@@ -522,12 +585,14 @@ function Engine:host_door_target()
     local pawn=self:host().Pawn
     return aimed_door(self,pawn,self.actor,pawn:GetAimingStartPosition(),pawn:GetInteractionAimingDirectionVector())
 end
-function Engine:begin_guest_door()
+function Engine:begin_guest_door(ref)
     if self.guest_door or self.door_preload or self.guest_crossing or not self.native.backend_door then return end
-    local ref=self:guest_door_target()
+    ref=ref or self:guest_door_target()
     if not ref then return end
     local _,reason=self.native.backend_door(ref)
-    if reason=="Native door backend is not loaded" then return end
+    if reason=="Native door backend is not loaded" then
+        return self:guest_interaction_notice("Launch through the split-screen OBSE64 backend to use supported doors.")
+    end
     local now=self.native.clock_ms()
     local request=1000000000+now%1000000000
     self.guest_door={ref=ref,request=request,deadline=now+500}
@@ -536,31 +601,49 @@ end
 function Engine:poll_guest_door()
     local pending=self.guest_door
     if not pending then return end
-    if self.native.clock_ms()>=pending.deadline then self.guest_door=nil; return end
+    if self.native.clock_ms()>=pending.deadline then
+        self.guest_door=nil
+        return self:guest_interaction_notice("The door did not respond.")
+    end
     local raw=self.native.backend_door(pending.ref)
     local snapshot=raw and json.decode(raw)
     if not snapshot or snapshot.request~=pending.request or snapshot.actor_ref~=pending.ref then return end
     self.guest_door=nil
+    local target,source_actor=self:guest_door_target()
+    if target~=pending.ref then return end
     local door=snapshot.door
+    if door and door.source_paired and not door.has_teleport and not door.has_random_destination then
+        if not self:request_guest_activation(source_actor,source_actor:K2_GetActorLocation()) then
+            self:guest_interaction_notice("This door cannot be activated from Player 2’s view.")
+        end
+        return
+    end
     if not door or not door.has_teleport or not door.source_paired
         or door.has_lock_data or door.has_script or door.has_random_destination
         or snapshot.cell_ref==0
         or not door.source_cell or not door.source_cell.attached or not door.target_cell
-        or not door.arrival_offset or not door.destination_ref or door.destination_ref==0 then return end
-    local target,source_actor=self:guest_door_target()
-    if target~=pending.ref then return end
+        or not door.arrival_offset or not door.destination_ref or door.destination_ref==0 then
+        return self:guest_interaction_notice("Player 2 cannot travel through this door.")
+    end
     if door.destination_cell~=snapshot.cell_ref then
-        if self.experimental_door_travel then
+        local hotel=snapshot.guest_hotel_travel and DoorFixtures.match(pending.ref,door)==DoorFixtures.hotel
+        if hotel then self.hotel_guest_travel=true end
+        if self.experimental_door_travel or hotel then
             if door.destination_paired and door.target_cell.attached then
                 require("lib.door_travel").begin(self,pending.ref,snapshot.cell_ref,door,
-                    snapshot.guest_sewer_transfer,snapshot.guest_attached_transfer)
+                    snapshot.guest_sewer_transfer,not hotel and snapshot.guest_attached_transfer)
             else
-                require("lib.door_preload").begin(self,pending.ref,source_actor,door)
+                require("lib.door_preload").begin(self,pending.ref,source_actor,door,hotel)
             end
+        end
+        if not self.guest_crossing and not self.door_preload then
+            self:guest_interaction_notice("This destination is unavailable for independent travel.")
         end
         return
     end
-    if not door.destination_paired or not door.target_cell.attached then return end
+    if not door.destination_paired or not door.target_cell.attached then
+        return self:guest_interaction_notice("The destination is not loaded.")
+    end
     local offset=door.arrival_offset
     self:command(("%s.moveto %08X %.6f %.6f %.6f"):format(self.actor_ref,door.destination_ref,offset[1],offset[2],offset[3]))
     self.dirty=true
@@ -1097,11 +1180,12 @@ function Engine:input_host(pad,dt)
     if pressed(16384) and not self.activation and not self.guest_dialogue then
         local address=self:host_activation_target_address()
         local target
-        if self.dialogues or address==nil then target=self:host_interaction_target() end
+        if self.experimental_dialogue or address==nil then target=self:host_interaction_target() end
         if address==nil then
             if valid(target) then address=target:GetAddress() end
         end
-        local talking=self.dialogues and valid(target) and address==target:GetAddress() and self.dialogues:start(1,target)
+        local talking=self.experimental_dialogue and self.dialogues and valid(target)
+            and address==target:GetAddress() and self.dialogues:start(1,target)
         if not talking and (not valid(self.actor) or address~=self.actor:GetAddress()) and not HostTravel.begin(self,address) then
             host:ActivateInput_Pressed()
             self.activation=1
@@ -1146,7 +1230,10 @@ function Engine:input(pad,dt)
         return true
     end
     local dialogue=self.guest_dialogue
-    if dialogue and (dialogue.menu or self.native.clock_ms()>=dialogue.deadline) then self.guest_dialogue=nil end
+    if dialogue and (dialogue.menu or self.native.clock_ms()>=dialogue.deadline) then
+        self.guest_dialogue=nil
+        if not dialogue.menu then self:guest_interaction_notice("The character did not respond.") end
+    end
     if self.guest_modal_closing then
         if buttons==0 then self.guest_modal_closing=nil end
         self.last_buttons=buttons
@@ -1200,16 +1287,7 @@ function Engine:input(pad,dt)
     if (buttons & 512)~=0 and (previous & 512)==0 then self:cast_guest_spell() end
     if (buttons & 8)~=0 and (previous & 8)==0 then self:open_shared_journal(2) end
     self:poll_guest_door()
-    if (buttons & 16384)~=0 and (previous & 16384)==0 then
-        local talking
-        if self.dialogues then
-            local _,target=self:guest_target(350,self:host().Pawn)
-            talking=self.dialogues:start(2,target)
-        else
-            talking=self:begin_shared_dialogue()
-        end
-        if not talking and not self:activate_shared_object() then self:begin_guest_door() end
-    end
+    if (buttons & 16384)~=0 and (previous & 16384)==0 then self:interact_guest() end
     if (buttons & 128)~=0 and (previous & 128)==0 then
         self.sneaking=not self.sneaking; self.actor:SetSneak(self.sneaking)
         self:command(self.actor_ref..".setforcesneak "..(self.sneaking and "1" or "0"))
@@ -1318,6 +1396,7 @@ function Engine:wait_for_guest()
     return true
 end
 function Engine:suspend()
+    self.interaction_notice=nil
     self:cancel_guest_interaction()
     self:restore_guest_npc_animation()
     self.host_door,self.guest_door=nil,nil
@@ -1351,6 +1430,7 @@ function Engine:suspend()
 end
 function Engine:resume(slot) self.slot=slot; self.last_buttons=0 end
 function Engine:rollback()
+    self.interaction_notice=nil
     self:cancel_guest_interaction()
     self:restore_guest_npc_animation()
     self.host_door,self.host_travel=nil,nil

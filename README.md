@@ -28,4 +28,10 @@ Use the Windows version of Oblivion Remastered from Steam. The installer checks 
 
 5. After PowerShell prints **Installed Local Split Screen**, launch the game from Steam and load a spare save. With both controllers connected, open **System → Save & Load → Split Screen**. Choose a layout and press **Options** on Player 2’s controller to start.
 
+## Player 2 interactions
+
+Aim at an object and press **Square** on Player 2’s controller. Supported loose items show **Take** and go into Player 2’s inventory.
+
+The separate voiced conversation pane and independent travel through the Tiber Septim Hotel front door require the matching local split-screen backend and an OBSE64 launch. The Windows downloads contain the mod scripts. The matching backend is a separate local build. The stock OBSE64 download alone does not provide the split-screen backend. [OBSE64 distribution policy](https://github.com/ianpatt/obse64/blob/master/obse64_readme.txt)
+
 [SHA-256 checksums for the Windows downloads](https://jldx-1.github.io/oblivion-remastered-splitscreen-mod/docs/download/SHA256SUMS.txt)
