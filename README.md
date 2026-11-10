@@ -2,6 +2,8 @@
 
 An experimental Windows mod for two players on one PC.
 
+![Two side-by-side player views in Talos Plaza, each with its own compass and HUD](docs/media/left-right.webp)
+
 [Project page, demo, and Windows download](https://jldx-1.github.io/oblivion-remastered-splitscreen-mod/docs/index.html)
 
 ## Install from the ZIP on Windows
