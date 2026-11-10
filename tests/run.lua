@@ -245,33 +245,48 @@ test("the engine waits for the System menu pause to end before joining", functio
     assert(not e:world_ready())
     FindAllOf,StaticFindObject=previous_find,previous_static
 end)
-test("guest object activation only forwards the same non-door target",function()
+test("guest object activation waits for the confirmed target and leaves doors to travel",function()
     local Engine=require("lib.engine")
     local original_find=StaticFindObject
-    local cached,object_class,pressed=10,"object",0
+    local cached,door,pressed=10,false,0
     local object={IsValid=function() return true end,GetAddress=function() return 10 end,
-        IsA=function(_,class) return object_class==class end}
-    local actor={IsValid=function() return true end,GetAttachedActors=function() end}
+        TESRefComponent={IsValid=function() return true end,bIsPaired=true},
+        IsA=function(_,class) return class=="/Script/Altar.VActor" or (door and class=="/Script/Altar.VDoor") end}
+    local actor={IsValid=function() return true end,GetAttachedActors=function() end,
+        GetAimingStartPosition=function() return {X=0,Y=0,Z=0} end}
     local traces={LineTraceSingle=function(_,_,_,_,_,_,_,_,hit)
         hit.HitObjectHandle={Actor={Get=function() return object end}}
+        hit.Location={X=50,Y=0,Z=0}
         return true
     end}
     StaticFindObject=function(path)
         if path:match("KismetSystemLibrary") then return traces end
         return path
     end
-    local e=Engine.new(nil,nil,nil)
+    local e=Engine.new({clock_ms=function() return 0 end},nil,nil)
     e.actor=actor
-    e.host=function() return {Pawn=actor,ActivateInput_Pressed=function() pressed=pressed+1 end} end
+    local rotation={Yaw=90,Pitch=0,Roll=0}
+    local host={Pawn=actor,IsValid=function() return true end,
+        ActivateInput_Pressed=function() pressed=pressed+1 end,
+        GetControlRotation=function() return rotation end,
+        SetControlRotation=function(_,value) rotation=value end}
+    e.host=function() return host end
+    e.gameplay_input_enabled=function() return true end
     e.host_activation_target_address=function() return cached end
     e.guest_aim=function() return {X=0,Y=0,Z=0},{X=1,Y=0,Z=0} end
     assert(e:activate_shared_object() and e.activation==2 and pressed==1)
     assert(not e:activate_shared_object() and pressed==1)
     e.activation=nil
     cached=11
-    assert(not e:activate_shared_object() and pressed==1)
-    cached,object_class=10,"/Script/Altar.VDoor"
-    assert(not e:activate_shared_object() and pressed==1)
+    assert(e:activate_shared_object() and pressed==1 and rotation.Yaw==0)
+    e:poll_guest_interaction()
+    assert(pressed==1)
+    cached=10
+    e:poll_guest_interaction()
+    assert(pressed==2 and rotation.Yaw==90)
+    e.activation=nil
+    door=true
+    assert(not e:activate_shared_object() and pressed==2)
     StaticFindObject=original_find
 end)
 test("settings require two distinct live controller instances",function()
@@ -512,6 +527,7 @@ test("guest dialogue ignores the host's body while walls and spell targeting sti
     local function pawn(id)
         return {IsValid=function() return true end,GetAttachedActors=function() end,BaseEyeHeight=60,
             K2_GetActorLocation=function() return {X=0,Y=0,Z=0} end,
+            GetAimingStartPosition=function() return {X=0,Y=0,Z=60} end,
             IsA=function() return true end,IsDead=function() return false end,IsUnconscious=function() return false end,
             GetAddress=function() return id end,
             TESRefComponent={IsValid=function() return true end,bIsPaired=true,
@@ -532,8 +548,11 @@ test("guest dialogue ignores the host's body while walls and spell targeting sti
     local dialogue_native={clock_ms=native.clock_ms,activation_target_address=function() return cached end}
     local e=Engine.new(dialogue_native,store,function() end)
     e.actor,e.actor_ref=guest,"FF001093"
-    e.host=function() return {Pawn=first,ActivateInput_Pressed=function() started=started+1 end} end
-    e.host_interaction_target=function() return npc end
+    e.host=function() return {Pawn=first,IsValid=function() return true end,
+        ActivateInput_Pressed=function() started=started+1 end,
+        GetControlRotation=function() return {Yaw=0,Pitch=0,Roll=0} end,
+        SetControlRotation=function() end} end
+    e.gameplay_input_enabled=function() return true end
     e:begin_shared_dialogue()
     assert(started==0)
     wall=false
@@ -542,7 +561,7 @@ test("guest dialogue ignores the host's body while walls and spell targeting sti
     e:begin_shared_dialogue()
     assert(started==0 and not e.guest_dialogue)
     cached=npc:GetAddress()
-    e:begin_shared_dialogue()
+    e:poll_guest_interaction()
     assert(started==1 and e.activation==2 and e.guest_dialogue)
 
     StaticFindObject=previous_static

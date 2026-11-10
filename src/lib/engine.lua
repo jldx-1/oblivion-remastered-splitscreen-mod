@@ -152,6 +152,10 @@ function Engine:create_view()
     end
     self.pc:SetIgnoreMoveInput(true)
     self.pc:SetIgnoreLookInput(true)
+    -- Let the guest camera request visible Unreal cells from its own position.
+    self.pc.bEnableStreamingSource=true
+    self.pc.bStreamingSourceShouldActivate=true
+    self.pc.StreamingSourcePriority=host:GetStreamingSourcePriority()
     self.previous_split=maps.bUseSplitscreen
     self.previous_offset=maps.bOffsetPlayerGamepadIds
     self.previous_layout=maps.TwoPlayerSplitscreenLayout
@@ -421,6 +425,46 @@ function Engine:host_activation_target_address()
         return self.native.activation_target_address(pawn:GetAddress())
     end
 end
+function Engine:press_guest_activation(speaker)
+    local host=self:host()
+    host:ActivateInput_Pressed()
+    if not self.loading then
+        self.activation=2
+        if speaker then self.guest_dialogue={deadline=self.native.clock_ms()+2000,speaker_ref=speaker} end
+    end
+    return true
+end
+function Engine:request_guest_activation(target,point,speaker)
+    if self.guest_interaction then return false end
+    local cached=self:host_activation_target_address()
+    if cached==target:GetAddress() then return self:press_guest_activation(speaker) end
+    if cached==nil then return false end
+    local host=self:host()
+    local start=host.Pawn:GetAimingStartPosition()
+    local x,y,z=point.X-start.X,point.Y-start.Y,point.Z-start.Z
+    if x*x+y*y+z*z>350^2 then return false end
+    local rotation=host:GetControlRotation()
+    self.guest_interaction={host=host,target=target,speaker=speaker,deadline=self.native.clock_ms()+300,
+        rotation={Yaw=rotation.Yaw,Pitch=rotation.Pitch,Roll=rotation.Roll}}
+    host:SetControlRotation({Yaw=math.deg(math.atan(y,x)),Pitch=math.deg(math.atan(z,math.sqrt(x*x+y*y))),Roll=0})
+    return true
+end
+function Engine:cancel_guest_interaction()
+    local pending=self.guest_interaction
+    self.guest_interaction=nil
+    if pending and valid(pending.host) then pending.host:SetControlRotation(pending.rotation) end
+end
+function Engine:poll_guest_interaction()
+    local pending=self.guest_interaction
+    if not pending then return end
+    if self.native.clock_ms()>=pending.deadline or not valid(pending.target) or not self:gameplay_input_enabled() then
+        return self:cancel_guest_interaction()
+    end
+    if self:host_activation_target_address()~=pending.target:GetAddress() then return end
+    self.guest_interaction=nil
+    self:press_guest_activation(pending.speaker)
+    if not self.loading and valid(pending.host) then pending.host:SetControlRotation(pending.rotation) end
+end
 function Engine:begin_shared_dialogue()
     if self.activation or self.guest_dialogue then return true end
     local host=self:host()
@@ -429,21 +473,13 @@ function Engine:begin_shared_dialogue()
     local ref,guest_target=self:guest_target(350,host.Pawn)
     if not valid(guest_target) or not guest_target:IsA(StaticFindObject("/Script/Altar.VPairedCharacter"))
         or guest_target:IsDead() or guest_target:IsUnconscious() then return end
-    local host_target=self:host_interaction_target()
-    local address=guest_target:GetAddress()
-    if not valid(host_target) or host_target:GetAddress()~=address then return true end
-    local cached=self:host_activation_target_address()
-    if cached~=nil and cached~=address then return true end
     -- Native conversations still use the shared campaign's player and camera.
-    host:ActivateInput_Pressed()
-    self.activation=2
-    self.guest_dialogue={deadline=self.native.clock_ms()+2000,speaker_ref=tonumber(ref,16)}
+    local p=guest_target:K2_GetActorLocation()
+    self:request_guest_activation(guest_target,{X=p.X,Y=p.Y,Z=p.Z+50},tonumber(ref,16))
     return true
 end
 function Engine:activate_shared_object()
     if self.activation or self.guest_dialogue then return false end
-    local address=self:host_activation_target_address()
-    if not address or address==0 then return false end
     local start,direction=self:guest_aim()
     local stop={X=start.X+350*direction.X,Y=start.Y+350*direction.Y,Z=start.Z+350*direction.Z}
     local host=self:host()
@@ -454,12 +490,12 @@ function Engine:activate_shared_object()
     local hit,color={},{R=0,G=0,B=0,A=0}
     if not trace:LineTraceSingle(self.actor,start,stop,0,false,ignore,0,hit,true,color,color,0) then return false end
     local object=hit.HitObjectHandle.Actor:Get()
-    if not valid(object) or object:GetAddress()~=address
+    if not valid(object) or not object:IsA(StaticFindObject("/Script/Altar.VActor"))
         or object:IsA(StaticFindObject("/Script/Altar.VDoor"))
         or object:IsA(StaticFindObject("/Script/Altar.VPairedPawn")) then return false end
-    host:ActivateInput_Pressed()
-    self.activation=2
-    return true
+    local ref=object.TESRefComponent
+    if not valid(ref) or not ref.bIsPaired then return false end
+    return self:request_guest_activation(object,hit.Location)
 end
 local function aimed_door(adapter,pawn,other,start,direction)
     local stop={X=start.X+350*direction.X,Y=start.Y+350*direction.Y,Z=start.Z+350*direction.Z}
@@ -921,6 +957,8 @@ function Engine:input_host(pad,dt)
     local host=self:host()
     if not valid(host) or not pad or not pad.connected or pad.slot~=self:host_slot() then return false end
     local buttons=pad.buttons or 0
+    if self.guest_interaction and (buttons~=0 or math.abs(pad.rx or 0)>5000 or math.abs(pad.ry or 0)>5000
+        or math.abs(pad.lx or 0)>5000 or math.abs(pad.ly or 0)>5000) then self:cancel_guest_interaction() end
     if buttons & 16384==0 then self:release_activation(1) end
     if not self:gameplay_input_enabled() then
         self.host_door=nil
@@ -1006,6 +1044,7 @@ function Engine:input(pad,dt)
     local buttons=pad.buttons or 0
     if self.guest_crossing then self.last_buttons=buttons; return true end
     if buttons & 16384==0 then self:release_activation(2) end
+    self:poll_guest_interaction()
     self:restore_guest_quiver()
     if not self:gameplay_input_enabled() then
         self.guest_door=nil
@@ -1195,6 +1234,7 @@ function Engine:wait_for_guest()
     return true
 end
 function Engine:suspend()
+    self:cancel_guest_interaction()
     self.host_door,self.guest_door=nil,nil
     if self.dialogues then self.dialogues:close(1); self.dialogues:close(2) end
     if self.door_preload then require("lib.door_preload").cancel_crossing(self) end
@@ -1225,6 +1265,7 @@ function Engine:suspend()
 end
 function Engine:resume(slot) self.slot=slot; self.last_buttons=0 end
 function Engine:rollback()
+    self:cancel_guest_interaction()
     self.host_door,self.host_travel=nil,nil
     HostCrossing.cancel(self)
     self.host_background_streams=nil
