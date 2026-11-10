@@ -342,14 +342,16 @@ function Engine:finish_join()
     self.previous_player_flag=self.actor:IsPlayerCharacter()
     self.actor:SetIsPlayerCharacter(true)
     self.actor.PairedPawnMovementComponent:SetIsMovementLocked(false)
-    self.actor.PairedPawnMovementComponent:SetUseControllerRotation(true)
-    self.actor.bUseControllerRotationYaw=true
+    local movement=self.actor.PairedPawnMovementComponent
+    self.guest_rotation_policy={yaw=self.actor.bUseControllerRotationYaw,
+        desired=movement.bUseControllerDesiredRotation}
+    movement:SetUseControllerRotation(false)
     self.previous_melee_restriction=self.actor.bRestrictedMeleeTargeting
     self.actor.bRestrictedMeleeTargeting=false
     self:configure_local_animation()
     self.yaw=self:host().Pawn:K2_GetActorRotation().Yaw
     self.pitch=-10
-    self.guest_pov=self.guest_pov or self:host().POV
+    self:set_guest_pov(self.guest_pov or self:host().POV)
     local gs=StaticFindObject("/Script/Engine.Default__GameplayStatics")
     local transform={Rotation={X=0,Y=0,Z=0,W=1},Translation=self.actor:K2_GetActorLocation(),Scale3D={X=1,Y=1,Z=1}}
     local camera=gs:BeginDeferredActorSpawnFromClass(self:host(),StaticFindObject("/Script/Engine.CameraActor"),transform,2,self.pc,0)
@@ -1001,6 +1003,26 @@ local function axis(value)
     if math.abs(value)<0.17 then return 0 end
     return (math.abs(value)-0.17)/0.83*(value<0 and -1 or 1)
 end
+local function movement_stick(pad)
+    local x,y=(pad.lx or 0)/32768,(pad.ly or 0)/32768
+    local magnitude=math.sqrt(x*x+y*y)
+    if magnitude<=0.17 then return 0,0,false end
+    local strength=(math.min(magnitude,1)-0.17)/0.83
+    local scale=strength/magnitude
+    return x*scale,y*scale,strength>0.5
+end
+local function move_from_view(pawn,x,y,yaw)
+    local angle=math.rad(yaw)
+    local forward_x,forward_y=math.cos(angle),math.sin(angle)
+    pawn.PairedPawnMovementComponent:SetOffsetMovementInput({
+        X=forward_x*y-forward_y*x,Y=forward_y*y+forward_x*x,Z=0})
+    pawn:AddMovementInput({X=forward_x,Y=forward_y,Z=0},y,true)
+    pawn:AddMovementInput({X=-forward_y,Y=forward_x,Z=0},x,true)
+end
+function Engine:set_guest_pov(pov)
+    self.guest_pov=pov
+    self.actor.bUseControllerRotationYaw=pov==0
+end
 function Engine:start_host_routing()
     local host=self:host()
     host:ExitVanityCamera()
@@ -1054,15 +1076,13 @@ function Engine:input_host(pad,dt)
     end
     local rotation=host:GetControlRotation()
     dt=dt or 1/60
-    local yaw=math.rad(rotation.Yaw)
-    local x,y=axis(pad.lx),axis(pad.ly)
-    host.Pawn.OblivionActorStatePairingComponent.bIsRunning=math.max(math.abs(x),math.abs(y))>0.5
-    host.Pawn.PairedPawnMovementComponent:SetOffsetMovementInput({X=math.cos(yaw)*y-math.sin(yaw)*x,Y=math.sin(yaw)*y+math.cos(yaw)*x,Z=0})
-    host.Pawn:AddMovementInput({X=math.cos(yaw),Y=math.sin(yaw),Z=0},axis(pad.ly),true)
-    host.Pawn:AddMovementInput({X=-math.sin(yaw),Y=math.cos(yaw),Z=0},axis(pad.lx),true)
     local turn,look=axis(pad.rx),axis(pad.ry)
     local pitch=(rotation.Pitch+180)%360-180
-    host:SetControlRotation({Yaw=rotation.Yaw+turn*130*dt,Pitch=math.max(-65,math.min(60,pitch+look*100*dt)),Roll=0})
+    local yaw=rotation.Yaw+turn*130*dt
+    host:SetControlRotation({Yaw=yaw,Pitch=math.max(-65,math.min(60,pitch+look*100*dt)),Roll=0})
+    local x,y,running=movement_stick(pad)
+    host.Pawn.OblivionActorStatePairingComponent.bIsRunning=running
+    move_from_view(host.Pawn,x,y,yaw)
     if pressed(4096) then host.Pawn:Jump() end
     if released(4096) then host.Pawn:StopJumping() end
     if pressed(16384) and not self.activation and not self.guest_dialogue then
@@ -1144,11 +1164,10 @@ function Engine:input(pad,dt)
         self.last_buttons=pad.buttons or 0; self:update_camera()
         return true
     end
-    self.yaw=self.yaw+axis(pad.rx)*130*dt
+    self.yaw=(self.yaw+axis(pad.rx)*130*dt)%360
     self.pitch=math.max(-65,math.min(60,self.pitch+axis(pad.ry)*100*dt))
-    local yaw=math.rad(self.yaw)
-    local x,y=axis(pad.lx),axis(pad.ly)
-    local running=math.max(math.abs(x),math.abs(y))>0.5
+    self.pc:SetControlRotation({Yaw=self.yaw,Pitch=self.pitch,Roll=0})
+    local x,y,running=movement_stick(pad)
     self.actor.OblivionActorStatePairingComponent.bIsRunning=running
     -- Set the native actor's run state as well as its Unreal animation state.
     if self.force_run~=running then
@@ -1165,11 +1184,9 @@ function Engine:input(pad,dt)
     self:set_guest_speed(speed)
     -- NPC locomotion consumes the paired component's offset, rather than the
     -- normal player input queue alone. This keeps movement on the paired actor.
-    self.actor.PairedPawnMovementComponent:SetOffsetMovementInput({X=math.cos(yaw)*y-math.sin(yaw)*x,Y=math.sin(yaw)*y+math.cos(yaw)*x,Z=0})
-    self.actor:AddMovementInput({X=math.cos(yaw),Y=math.sin(yaw),Z=0},y,true)
-    self.actor:AddMovementInput({X=-math.sin(yaw),Y=math.cos(yaw),Z=0},x,true)
+    move_from_view(self.actor,x,y,self.yaw)
     if (buttons & 32)~=0 and (previous & 32)==0 then
-        self.guest_pov=(self.guest_pov+1)%3
+        self:set_guest_pov((self.guest_pov+1)%3)
     end
     if (buttons & 512)~=0 and (previous & 512)==0 then self:cast_guest_spell() end
     if (buttons & 8)~=0 and (previous & 8)==0 then self:open_shared_journal(2) end
@@ -1355,7 +1372,14 @@ function Engine:rollback()
     if valid(self.actor) then
         if self.previous_player_flag~=nil then self.actor:SetIsPlayerCharacter(self.previous_player_flag) end
         if self.previous_melee_restriction~=nil then self.actor.bRestrictedMeleeTargeting=self.previous_melee_restriction end
+        local rotation=self.guest_rotation_policy
+        if rotation then
+            self.actor.bUseControllerRotationYaw=rotation.yaw
+            local movement=self.actor.PairedPawnMovementComponent
+            if valid(movement) then movement:SetUseControllerRotation(rotation.desired) end
+        end
     end
+    self.guest_rotation_policy=nil
     self.previous_player_flag,self.previous_melee_restriction=nil,nil
     for _,record in ipairs(self.animation_policies or {}) do
         if valid(record.mesh) then record.mesh.VisibilityBasedAnimTickOption=record.visibility; record.mesh.bEnableUpdateRateOptimizations=record.optimized end
