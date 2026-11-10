@@ -4,7 +4,7 @@ Engine.__index = Engine
 local Actions=require("lib.actions")
 local Races=require("lib.races")
 local CloneInventory=require("lib.clone_inventory")
-local FirstPerson=require("lib.first_person")
+local FirstPerson=require("lib.native_first_person")
 local HostBody=require("lib.host_body")
 local HostTravel=require("lib.host_travel")
 local HostCrossing=require("lib.host_crossing")
@@ -400,7 +400,7 @@ local function aimed_pawn(actor,start,direction,distance,other_player)
     if traces:LineTraceSingle(actor,start,hit.Location,0,false,ignore,0,{},true,color,color,0) then return end
     return target
 end
-function Engine:guest_aim()
+function Engine:guest_aim(use_pawn_eye)
     local actor=self.actor
     local location=actor:K2_GetActorLocation()
     local yaw,pitch=math.rad(self.yaw),math.rad(self.pitch)
@@ -408,6 +408,7 @@ function Engine:guest_aim()
     -- capsule during running or transitions.
     local start={X=location.X,Y=location.Y,Z=location.Z+actor.BaseEyeHeight+12}
     local direction={X=math.cos(yaw)*math.cos(pitch),Y=math.sin(yaw)*math.cos(pitch),Z=math.sin(pitch)}
+    if not use_pawn_eye and self.first_person_eye then start=self.first_person_eye end
     return start,direction
 end
 function Engine:guest_target(distance,other_player)
@@ -931,7 +932,7 @@ function Engine:update_camera()
     local yaw,pitch=math.rad(self.yaw),math.rad(self.pitch)
     local host=self:host()
     local first_person=self.guest_pov==0
-    local eye=self:guest_aim()
+    local eye=self:guest_aim(true)
     local position=eye
     local actors={self.actor}
     local attached={}
@@ -976,8 +977,8 @@ function Engine:update_camera()
         self.pc.HiddenActors={}
         self.hidden_guest_actors=nil
     end
-    self.camera:K2_SetActorLocationAndRotation(position,{Pitch=self.pitch,Yaw=self.yaw,Roll=0},false,{},true)
-    self.pc:SetControlRotation({Pitch=self.pitch,Yaw=self.yaw,Roll=0})
+    local control_rotation={Pitch=self.pitch,Yaw=self.yaw,Roll=0}
+    self.pc:SetControlRotation(control_rotation)
     self:update_guest_npc_animation(host,location)
     if not self.host_body_failed and self.native.set_weak_component then
         self.host_body=self.host_body or HostBody.new(self.native)
@@ -988,15 +989,22 @@ function Engine:update_camera()
             self.log("Player 1 world body unavailable: "..tostring(err))
         end
     end
+    local rotation=control_rotation
+    self.first_person_eye=nil
     if first_person and not self.first_person_failed then
         self.first_person=self.first_person or FirstPerson.new()
-        local ok,err=pcall(self.first_person.update,self.first_person,host,self.actor,self.camera,self.native.clock_ms())
+        local ok,eye_position,eye_rotation=pcall(self.first_person.update,self.first_person,host,
+            self.actor,self.camera,eye,control_rotation,self.native.clock_ms(),self.force_run)
         if not ok then
-            self.first_person:destroy()
+            pcall(self.first_person.destroy,self.first_person)
             self.first_person_failed=true
-            self.log("Player 2 first-person gear unavailable: "..tostring(err))
+            self.log("Player 2 native first-person rig unavailable: "..tostring(eye_position))
+        elseif eye_position then
+            self.first_person_eye=eye_position
+            position,rotation=eye_position,eye_rotation
         end
     elseif self.first_person then self.first_person:destroy() end
+    self.camera:K2_SetActorLocationAndRotation(position,rotation,false,{},true)
 end
 local function axis(value)
     value=(value or 0)/32768
@@ -1021,6 +1029,7 @@ local function move_from_view(pawn,x,y,yaw)
 end
 function Engine:set_guest_pov(pov)
     self.guest_pov=pov
+    self.first_person_eye=nil
     self.actor.bUseControllerRotationYaw=pov==0
 end
 function Engine:start_host_routing()
@@ -1316,6 +1325,7 @@ function Engine:suspend()
     if self.door_preload then require("lib.door_preload").cancel_crossing(self) end
     if self.journal then self.journal.neutral=true end
     if self.first_person then self.first_person:destroy() end
+    self.first_person_eye=nil
     if self.host_body then self.host_body:destroy() end
     if self.activation then self:release_activation(self.activation) end
     if paired(self.actor) then
@@ -1357,7 +1367,7 @@ function Engine:rollback()
     self:set_system_fullscreen(false)
     self.system_fullscreen=nil
     if self.first_person then self.first_person:destroy() end
-    self.first_person,self.first_person_failed=nil,nil
+    self.first_person,self.first_person_failed,self.first_person_eye=nil,nil,nil
     if self.host_body then self.host_body:destroy() end
     self.host_body,self.host_body_failed=nil,nil
     self.transition=nil
