@@ -5,7 +5,7 @@ Dialogue.__index=Dialogue
 local json=require("lib.json")
 local Layout=require("lib.layout")
 local response_table="/Game/Localization/StringTables/ST_ResponseTexts.ST_ResponseTexts"
-local dialogue_font="/Game/UI/CommonStyle/Fonts/Font_Kingthings_Localized.Font_Kingthings_Localized"
+local dialogue_widget="/Game/UI/Modern/GameMenuLayer/Dialog/WBP_ModernMenu_Dialog.WBP_ModernMenu_Dialog_C"
 local topics={{0xC8,"Greeting"},{0x1FDA6,"Imperial City"},{0xD7,"Rumors"},
     {0x45F63,"Give two gold"},{0xD4,"Goodbye"}}
 local races={[0x907]="imperial",[0xD43]="redguard",[0x191C0]="orc",[0x191C1]="dark_elf",
@@ -14,43 +14,48 @@ local races={[0x907]="imperial",[0xD43]="redguard",[0x191C0]="orc",[0x191C1]="da
 local voice_types={[0]="",[1]="/altvoice",[2]="/beggar"}
 local function valid(object) return object and object:IsValid() end
 
-function Dialogue.new(adapter,canvas,tree)
-    return setmetatable({adapter=adapter,canvas=canvas,tree=tree,panels={{},{}},
+function Dialogue.new(adapter,canvas)
+    return setmetatable({adapter=adapter,canvas=canvas,panels={{},{}},
         request=1100000000+adapter.native.clock_ms()%800000000},Dialogue)
 end
 
-local function make(tree,class)
-    return StaticConstructObject(StaticFindObject("/Script/UMG."..class),tree)
-end
-
 function Dialogue:mount(player,panel)
-    if valid(panel.frame) then return end
-    local frame=make(self.tree,"Border")
-    frame:SetBrushColor({R=0.96,G=0.90,B=0.77,A=0.96})
-    frame:SetPadding({Left=18,Top=12,Right=18,Bottom=12})
-    local slot=self.canvas:AddChildToCanvas(frame)
-    slot:SetOffsets({Left=18,Top=0,Right=18,Bottom=0})
-    local box=make(self.tree,"VerticalBox")
-    frame:AddChild(box)
-    panel.frame,panel.title,panel.body=frame,make(self.tree,"TextBlock"),make(self.tree,"TextBlock")
-    local stock_font=StaticFindObject(dialogue_font)
-    if not valid(stock_font) then LoadAsset(dialogue_font); stock_font=StaticFindObject(dialogue_font) end
-    for _,label in ipairs({panel.title,panel.body}) do
-        label:SetColorAndOpacity({SpecifiedColor={R=0,G=0,B=0,A=1},ColorUseRule=0})
-        local font=label.Font
-        if valid(stock_font) then
-            font.FontObject=stock_font
-            font.TypefaceFontName=FName("Regular-Regular")
+    if not valid(panel.frame) then
+        local class=StaticFindObject(dialogue_widget)
+        if not valid(class) then
+            LoadAsset(dialogue_widget)
+            class=StaticFindObject(dialogue_widget)
         end
-        font.Size=24
-        label:SetFont(font)
-        label:SetAutoWrapText(true)
-        box:AddChildToVerticalBox(label):SetPadding({Left=0,Top=0,Right=0,Bottom=4})
+        if not valid(class) then return false end
+        local library=StaticFindObject("/Script/UMG.Default__WidgetBlueprintLibrary")
+        local host=self.adapter:host()
+        local owner=player==1 and host or self.adapter.pc
+        local frame=library:Create(host,class,owner)
+        if not valid(frame) then return false end
+        local model=StaticConstructObject(StaticFindObject("/Script/Altar.VDialogueMenuViewModel"),frame)
+        if not valid(model) then return false end
+        self.canvas:AddChildToCanvas(frame):SetOffsets({Left=0,Top=0,Right=0,Bottom=0})
+        frame:SetVisibility(1)
+        -- The stock widget draws the pane. The local session handles input so
+        -- the widget never activates the game's shared dialogue menu.
+        frame:SetVDialogueMenuViewModel(model)
+        frame["Update Buttons Visibility"](frame,model.ButtonsVisibility)
+        panel.frame=frame
     end
+    panel.frame.Slot:SetAnchors(Layout.anchors(self.adapter.layout,player))
+    return true
 end
 
 local function set_text(panel,message)
-    panel.body:SetText(FText(message))
+    panel.frame["Update Subtitle"](panel.frame,FText(message))
+    panel.frame["Update Subtitle Visibility"](panel.frame,message~="")
+end
+
+local function highlight(panel,index)
+    local list=panel.frame.dialog_scrollbox
+    if valid(list) and index>=1 and index<=list:GetSize() then
+        list:SetFocusedElementIndex(index-1)
+    end
 end
 
 function Dialogue:close(player)
@@ -88,8 +93,7 @@ function Dialogue:start(player,speaker)
     if other and other.speaker_id==speaker_id then return true end
 
     local panel=self.panels[player]
-    self:mount(player,panel)
-    panel.frame.Slot:SetAnchors(Layout.anchors(self.adapter.layout,player,0.60,0.94))
+    if not self:mount(player,panel) then return false end
     local session={speaker=speaker,listener=listener,speaker_id=speaker_id,listener_id=listener_id,
         pending={},choices={},index=1,deadline=self.adapter.native.clock_ms()+3000,
         read_only=not self.adapter.experimental_dialogue}
@@ -101,9 +105,10 @@ function Dialogue:start(player,speaker)
         local label=texts:TextFromStringTable(FName("/Game/Localization/StringTables/ST_FullNames.ST_FullNames"),name):ToString()
         if not label:find("MISSING STRING",1,true) then name=label end
     end
-    panel.title:SetText(FText(name))
+    panel.frame["Update Speaker Name"](panel.frame,FText(name))
+    panel.frame["Update Responses"](panel.frame,{})
     set_text(panel,"Finding topics…")
-    panel.frame:SetVisibility(4)
+    panel.frame:SetVisibility(3)
 
     local signed=listener_id>=0x80000000 and listener_id-0x100000000 or listener_id
     local commands={}
@@ -226,18 +231,17 @@ end
 local function render_choices(panel,session)
     local rows={}
     for i,choice in ipairs(session.choices) do
-        rows[#rows+1]=(i==session.index and ">  " or "    ")..choice.name
+        rows[i]={ResponseText=FText(choice.name),ResponseID=i-1,bIsNewResponse=false}
     end
-    if #rows==0 then rows[1]="No topics available" end
-    rows[#rows+1]="D-pad  Select     Cross  Listen     Circle  Close"
-    set_text(panel,table.concat(rows,"\n"))
+    panel.frame["Update Responses"](panel.frame,rows)
+    highlight(panel,session.index)
+    set_text(panel,#rows==0 and "No topics available. Circle to close." or "")
 end
 
 function Dialogue:show_line(panel,session)
     self:stop_voice(session)
     local line=session.lines and session.lines[session.line_index]
-    local hint=session.lines and session.line_index<#session.lines and "Cross  Next     Circle  Back" or "Cross  Continue     Circle  Back"
-    set_text(panel,(line and line.text or "Response text is unavailable").."\n\n"..hint)
+    set_text(panel,line and line.text or "Response text is unavailable")
     self:play_voice(session,line)
 end
 
@@ -273,7 +277,7 @@ function Dialogue:poll_commit(player,panel,session)
             unsupported="This reply’s gameplay effect is unavailable in split-screen.",
             ineligible="This reply is no longer available.",out_of_range="Move closer to the speaker and try again.",
             unavailable="The game could not confirm the effect."}
-        if messages[status] then set_text(panel,panel.body:GetText():ToString().."\n"..messages[status]) end
+        if messages[status] then set_text(panel,messages[status]) end
     elseif self.adapter.native.clock_ms()>=session.deadline then
         self:close(player)
     end
@@ -304,7 +308,7 @@ function Dialogue:input(player,pressed)
         elseif pressed & (4096 | 8192)~=0 then
             self:stop_voice(session)
             session.reading,session.selected_info=nil,nil
-            render_choices(panel,session)
+            set_text(panel,"")
         end
     elseif pressed & 8192~=0 then
         self:close(player)
@@ -312,7 +316,7 @@ function Dialogue:input(player,pressed)
         if pressed & 3~=0 then
             local direction=pressed & 2~=0 and 1 or -1
             session.index=(session.index-1+direction)%#session.choices+1
-            render_choices(panel,session)
+            highlight(panel,session.index)
         elseif pressed & 4096~=0 then
             local lines,info=self:response_text(session.choices[session.index].infos)
             session.reading,session.selected_info=true,info

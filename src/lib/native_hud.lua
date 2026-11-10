@@ -8,6 +8,12 @@ local assets={
  main="/Game/UI/Modern/HUD/Main/WBP_ModernHud_Main.WBP_ModernHud_Main_C",
  reticle="/Game/UI/Modern/HUD/Reticle/WBP_ModernHud_Reticle.WBP_ModernHud_Reticle_C",
 }
+-- Values from the game's ELegacyHudReticleIcon enum.
+local interaction_icons={none=0,pickup=1,object=4,npc=7,door=8}
+local button_textures={
+ square="/Game/Art/UI/Icons/Icons_Inputs/Prospero/T_Icon_Prospero_Square.T_Icon_Prospero_Square",
+ x="/Game/Art/UI/Icons/Icons_Inputs/Xbox/T_Icon_Xbox_X.T_Icon_Xbox_X",
+}
 function HUD.new(_,canvas) return setmetatable({canvas=canvas,screens={},reticles={}},HUD) end
 local function owned(widget,screen)
  for _=1,32 do
@@ -125,6 +131,11 @@ function HUD:copy_compass_markers()
  self.model:K2_BroadcastFieldValueChanged({FieldName=FName("CompassIconMarkers")})
  self.model:K2_BroadcastFieldValueChanged({FieldName=FName("GetCompassIconMarkers")})
 end
+function HUD:update_compass(yaw)
+ if valid(self.model) then
+  self:field("CompassDirectionValue",((yaw or 0)+90)%360)
+ end
+end
 function HUD:show_status_bars()
  -- Native full-bar fade timers otherwise leave different subsets visible in
  -- each pane. Keep the same three native bars visible for both local players.
@@ -174,6 +185,59 @@ function HUD:update_subtitle(visible)
  end
  self.subtitle:SetVisibility(4)
 end
+function HUD:mount_interaction_prompt()
+ local function make(class)
+  return StaticConstructObject(StaticFindObject("/Script/UMG."..class),self.canvas)
+ end
+ local function label()
+  local text=make("TextBlock")
+  local font=text.Font
+  font.Size=16
+  text:SetFont(font)
+  text:SetJustification(1)
+  text:SetShadowOffset({X=1,Y=2})
+  text:SetShadowColorAndOpacity({R=0,G=0,B=0,A=1})
+  return text
+ end
+ local box=make("VerticalBox")
+ local title=label()
+ box:AddChildToVerticalBox(title):SetHorizontalAlignment(2)
+ local row=make("HorizontalBox")
+ box:AddChildToVerticalBox(row):SetHorizontalAlignment(2)
+ local size=make("SizeBox")
+ size:SetWidthOverride(22)
+ size:SetHeightOverride(22)
+ local button=make("Image")
+ size:AddChild(button)
+ local slot=row:AddChildToHorizontalBox(size)
+ slot:SetPadding({Left=0,Top=0,Right=5,Bottom=0})
+ slot:SetVerticalAlignment(2)
+ local action=label()
+ row:AddChildToHorizontalBox(action):SetVerticalAlignment(2)
+ self.canvas:AddChildToCanvas(box):SetOffsets({Left=12,Top=0,Right=12,Bottom=0})
+ self.interaction_prompt,self.interaction_title,self.interaction_row=box,title,row
+ self.interaction_button,self.interaction_button_size,self.interaction_action=button,size,action
+end
+function HUD:interaction_button_label(controller)
+ if self.interaction_controller==controller and self.interaction_fallback then
+  return self.interaction_fallback
+ end
+ self.interaction_controller=controller
+ local name=(controller or ""):lower()
+ local key
+ if name:find("dualsense",1,true) or name:find("dualshock",1,true) or name:find("playstation",1,true) then
+  key="square"
+ elseif name:find("xbox",1,true) or name:find("xinput",1,true) then
+  key="x"
+ end
+ local path=button_textures[key]
+ local texture=path and StaticFindObject(path)
+ if path and not valid(texture) then LoadAsset(path); texture=StaticFindObject(path) end
+ if valid(texture) then self.interaction_button:SetBrushFromTexture(texture,false) end
+ self.interaction_button_size:SetVisibility(valid(texture) and 4 or 1)
+ self.interaction_fallback=valid(texture) and "" or (key=="square" and "Square" or key=="x" and "X" or "Left face button")
+ return self.interaction_fallback
+end
 function HUD:update_interaction_prompt(visible)
  local adapter=self.adapter
  local inventory=adapter.inventories and adapter.inventories[2]
@@ -181,6 +245,7 @@ function HUD:update_interaction_prompt(visible)
  if not visible or adapter.guest_unloaded or adapter.guest_dialogue or dialogue
      or (inventory and inventory.open) or adapter.guest_crossing then
   if valid(self.interaction_prompt) then self.interaction_prompt:SetVisibility(1) end
+  self:set_interaction_icon(interaction_icons.none)
   self.next_interaction_prompt=nil
   return
  end
@@ -189,9 +254,12 @@ function HUD:update_interaction_prompt(visible)
  self.next_interaction_prompt=now+100
  local message=adapter.interaction_notice and now<adapter.interaction_notice_until and adapter.interaction_notice
  if adapter.guest_door or adapter.door_preload then message="Opening door…" end
+ local icon=interaction_icons.none
+ local action
  if not message then
   local target=adapter:guest_interaction_target()
   if target then
+   icon=interaction_icons[target.kind]
    local reference=target.actor.TESRefComponent
    local form=valid(reference) and reference.TESForm
    local name=valid(form) and form.FullName:ToString()
@@ -203,32 +271,36 @@ function HUD:update_interaction_prompt(visible)
    if not name or name=="" or name:find("MISSING STRING",1,true) then
     name=({npc="Character",door="Door",object="Object",pickup="Item"})[target.kind]
    end
-   local action=({npc="Talk",door="Open",object="Use",pickup="Take"})[target.kind]
-   message=name.."\n□  "..action
+   action=({npc="Talk",door="Open",object="Use",pickup="Take"})[target.kind]
+   message=name
   end
  end
+ self:set_interaction_icon(icon)
  if not message then
   if valid(self.interaction_prompt) then self.interaction_prompt:SetVisibility(1) end
   return
  end
- if not valid(self.interaction_prompt) then
-  local prompt=StaticConstructObject(StaticFindObject("/Script/UMG.TextBlock"),self.canvas)
-  if not valid(prompt) then return end
-  local font=prompt.Font
-  font.Size=16
-  prompt:SetFont(font)
-  prompt:SetJustification(1)
-  prompt:SetShadowOffset({X=1,Y=2})
-  prompt:SetShadowColorAndOpacity({R=0,G=0,B=0,A=1})
-  self.canvas:AddChildToCanvas(prompt):SetOffsets({Left=12,Top=0,Right=12,Bottom=0})
-  self.interaction_prompt=prompt
- end
+ if not valid(self.interaction_prompt) then self:mount_interaction_prompt() end
  self.interaction_prompt.Slot:SetAnchors(Layout.anchors(adapter.layout,2,0.56,0.72))
  if message~=self.interaction_prompt_text then
-  self.interaction_prompt:SetText(FText(message))
+  self.interaction_title:SetText(FText(message))
   self.interaction_prompt_text=message
  end
+ if action then
+  local fallback=self:interaction_button_label(adapter.guest_controller_name)
+  local label=fallback~="" and fallback.."  "..action or action
+  if self.interaction_action_text~=label then
+   self.interaction_action:SetText(FText(label))
+   self.interaction_action_text=label
+  end
+ end
+ self.interaction_row:SetVisibility(action and 4 or 1)
  self.interaction_prompt:SetVisibility(4)
+end
+function HUD:set_interaction_icon(icon)
+ if valid(self.reticle_model) and self.reticle_model:GetReticleIcon()~=icon then
+  self.reticle_model:SetReticleIcon(icon)
+ end
 end
 function HUD:inventory_snapshot(adapter)
  if not adapter:has_inventory_backend() then return end
@@ -252,6 +324,8 @@ function HUD:destroy()
  self.subtitle,self.subtitle_text,self.original_subtitle=nil,nil,nil
  if valid(self.interaction_prompt) then self.interaction_prompt:RemoveFromParent() end
  self.interaction_prompt,self.interaction_prompt_text,self.next_interaction_prompt=nil,nil,nil
+ self.interaction_title,self.interaction_row,self.interaction_button,self.interaction_button_size,self.interaction_action=nil,nil,nil,nil,nil
+ self.interaction_controller,self.interaction_fallback,self.interaction_action_text=nil,nil,nil
  for _,widgets in ipairs({self.screens or {},self.reticles or {}}) do
   for _,widget in ipairs(widgets) do if valid(widget) then widget:RemoveFromParent() end end
  end
@@ -286,7 +360,7 @@ function HUD:update(session)
  end
  self:field("CurrentMagickaValue",values:GetFloatModifiedActorValue(9))
  self:field("MaxMagickaValue",values:GetFloatBaseActorValue(9))
- self:field("CompassDirectionValue",((adapter.yaw or 0)+90)%360)
+ self:update_compass(adapter.yaw)
  self:copy_compass_markers()
  self:field("bIsOverencumbered",adapter.actor:IsOverEncumbered())
  local snapshot=self:inventory_snapshot(adapter)

@@ -378,7 +378,7 @@ function UI:update(session)
             adapter.inventories={Inventory.new(adapter,self.canvas,self.screen.WidgetTree,1),Inventory.new(adapter,self.canvas,self.screen.WidgetTree,2)}
         end
         if not adapter.dialogues and adapter:has_guest_dialogue() then
-            adapter.dialogues=require("lib.dialogue").new(adapter,self.canvas,self.screen.WidgetTree)
+            adapter.dialogues=require("lib.dialogue").new(adapter,self.canvas)
         end
         if not adapter:gameplay_input_enabled() then
             for _,menu in ipairs(adapter.inventories or {}) do menu:close() end

@@ -181,6 +181,7 @@ local function tick()
         if session.state=="active" then adapter:suspend() end
         for _,pad in ipairs(pads) do previous[pad.slot]=pad.buttons or 0 end
     end
+    if session.state=="active" and ui.hud then ui.hud:update_compass(adapter.yaw) end
     if now>=next_ui then ui:update(session); next_ui=now+250 end
 end
 LoopInGameThreadWithDelay(16,function()

@@ -1240,6 +1240,7 @@ function Engine:input_host(pad,dt)
 end
 function Engine:input(pad,dt)
     if not pad or pad.slot~=self.slot then return false end
+    self.guest_controller_name=pad.simulated and "DualSense" or pad.name
     if self.guest_unloaded or not paired(self.actor) then return self:wait_for_guest() end
     if not valid(self.pc) or not valid(self.camera) then return false end
     if self.recover_equipment then self:poll_guest_equipment(); return true end
