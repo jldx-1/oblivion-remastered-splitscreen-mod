@@ -1161,8 +1161,54 @@ local function pawn_distance_squared(first,second)
     return (a.X-b.X)^2+(a.Y-b.Y)^2+(a.Z-b.Z)^2
 end
 
+local revive_window=30000
+local revive_hold_time=10000
+
+function Engine:poll_hotel_life(now)
+    if not self.hotel_guest_travel or self.guest_crossing or self.door_preload
+        or not self.native.backend_actor_position then return end
+    local id=tonumber(self.actor_ref,16)
+    if not id then return end
+    local raw=self.native.backend_actor_position(id)
+    local snapshot=raw and json.decode(raw)
+    if snapshot and snapshot.request==self.hotel_life_request then self.hotel_life=snapshot end
+    if now>=(self.hotel_life_next or 0) then
+        self.hotel_life_request=650000000+now%100000000
+        self.hotel_life_next=now+250
+        self:command(self.actor_ref..".LSSActorPosition "..self.hotel_life_request)
+    end
+end
+
+function Engine:guest_is_dead()
+    return self.actor:IsDead() or self.hotel_life and self.hotel_life.dead==true
+end
+
+function Engine:poll_hotel_respawn(recovery,now)
+    local snapshot=self.hotel_life
+    if not snapshot or snapshot.dead~=false then return end
+    if recovery.phase=="hotel_raise" and snapshot.cell_ref==DoorFixtures.hotel.cell then
+        recovery.door_request=640000000+now%100000000
+        self:command(("LSSDoor %d %d"):format(DoorFixtures.hotel.exit,recovery.door_request))
+        recovery.phase="hotel_door"
+    elseif recovery.phase=="hotel_door" then
+        local raw=self.native.backend_door(DoorFixtures.hotel.exit)
+        local door=raw and json.decode(raw)
+        if not door or door.request~=recovery.door_request then return end
+        local link=door.door
+        if not door.guest_hotel_travel or not link or not link.destination_paired
+            or not link.target_cell or not link.target_cell.attached then return end
+        recovery.crossing=require("lib.door_travel").begin(self,DoorFixtures.hotel.exit,
+            DoorFixtures.hotel.cell,link,false,false,true)
+        recovery.phase="hotel_cross"
+    elseif recovery.phase=="hotel_cross" and recovery.crossing and recovery.crossing.completed then
+        if self.actor:IsDead() then self.actor:SetLifeState(1) end
+        -- The stock mover can now reach Player 1 from the attached exterior.
+        recovery.phase=nil
+    end
+end
+
 function Engine:can_revive_guest()
-    if self.guest_recovery or self.guest_unloaded or not paired(self.actor) or not self.actor:IsDead() then return false end
+    if self.guest_recovery or self.guest_unloaded or not paired(self.actor) or not self:guest_is_dead() then return false end
     local host=self:host()
     return valid(host) and paired(host.Pawn) and not host.Pawn:IsDead()
         and pawn_distance_squared(host.Pawn,self.actor)<=240^2
@@ -1170,26 +1216,34 @@ end
 
 function Engine:request_guest_recovery(respawn)
     local ref=self.actor_ref
-    if self.guest_recovery or self.guest_unloaded or not paired(self.actor) or not self.actor:IsDead()
+    if self.guest_recovery or self.guest_unloaded or not paired(self.actor) or not self:guest_is_dead()
         or not ref or not ref:match("^FF%x%x%x%x%x%x$")
         or (not respawn and not self:can_revive_guest()) then return false end
-    -- Animate the original actor back to life, keeping its equipment and reference.
-    self:command(ref..".resurrect 1")
     self.interaction_notice=nil
     self.guest_recovery={respawn=respawn,deadline=self.native.clock_ms()+6000}
+    -- Raise the original actor first. Moving a dead actor out of the
+    -- background hotel can discard its native scene pairing.
+    self:command(ref..".resurrect 1")
+    if respawn and self.hotel_life and self.hotel_life.dead and self.hotel_life.cell_ref==DoorFixtures.hotel.cell then
+        self.guest_recovery.phase="hotel_raise"
+    end
     return true
 end
 
 function Engine:input_guest_recovery(buttons)
     local actor=self.actor
-    local dead=actor:IsDead()
+    local now=self.native.clock_ms()
+    self:poll_hotel_life(now)
+    local dead=self:guest_is_dead()
     local recovery=self.guest_recovery
     if not dead and not recovery and not self.guest_downed then return false end
-    local now=self.native.clock_ms()
+    if self.revive_hold and self.revive_hold.by==2 then self.revive_hold=nil end
     if not self.guest_downed then
         self.guest_downed=true
+        self.guest_revive_until=now+revive_window
         self:cancel_guest_interaction()
         self:release_activation(2)
+        self.guest_dialogue=nil
         if self.dialogues then self.dialogues:close(2) end
         if self.inventories then self.inventories[2]:close() end
         self.guest_door=nil
@@ -1205,7 +1259,9 @@ function Engine:input_guest_recovery(buttons)
     end
     local host=self:host().Pawn
     if recovery then
-        if not dead and not actor:IsUnconscious() then
+        if recovery.phase then
+            self:poll_hotel_respawn(recovery,now)
+        elseif not dead and not actor:IsUnconscious() then
             if not recovery.respawn then
                 self.guest_recovery=nil
             elseif not recovery.move_sent then
@@ -1230,11 +1286,17 @@ function Engine:input_guest_recovery(buttons)
             self:guest_interaction_notice(dead and "Recovery failed. Try again."
                 or "Player 2 recovered where they fell.")
         end
-    elseif dead and buttons & 4096~=0 and (self.last_buttons or 0) & 4096==0 then
-        self:request_guest_recovery(true)
+    elseif dead then
+        local expired=self.guest_revive_until and now>=self.guest_revive_until
+        if expired then self.guest_revive_until=nil end
+        if (expired and not (self.revive_hold and self.revive_hold.by==1))
+            or buttons & 4096~=0 and (self.last_buttons or 0) & 4096==0 then
+            self:request_guest_recovery(true)
+        end
+        if expired and self.revive_hold and self.revive_hold.by==1 then self.guest_revive_until=now end
     end
     if not dead and not self.guest_recovery then
-        self.guest_downed=nil
+        self.guest_downed,self.guest_revive_until=nil,nil
         actor.PairedPawnMovementComponent:SetIsMovementLocked(false)
         self.dirty=true
     end
@@ -1243,15 +1305,96 @@ function Engine:input_guest_recovery(buttons)
     return true
 end
 
+function Engine:can_revive_host()
+    local host=self:host()
+    return self.host_downed and not self.host_recovery and valid(host) and paired(host.Pawn)
+        and host.Pawn:IsDead() and paired(self.actor) and not self:guest_is_dead()
+        and pawn_distance_squared(host.Pawn,self.actor)<=240^2
+end
+
+function Engine:request_host_recovery(respawn)
+    local host=self:host().Pawn
+    if self.host_recovery or not host:IsDead() or (not respawn and not self:can_revive_host()) then return false end
+    self:command("player.resurrect 1")
+    self.host_recovery={respawn=respawn,deadline=self.native.clock_ms()+6000}
+    return true
+end
+
+function Engine:input_host_recovery(host,buttons)
+    local pawn=host.Pawn
+    if self.loading or not paired(pawn) then return false end
+    local dead=pawn:IsDead()
+    if not dead and not self.host_downed then return false end
+    if self.revive_hold and self.revive_hold.by==1 then self.revive_hold=nil end
+    local now=self.native.clock_ms()
+    local values=pawn.ActorValuesPairingComponent
+    if not self.host_downed then
+        self.host_downed=true
+        self.host_revive_until=now+revive_window
+        self.host_health=math.max(1,math.floor(values:GetFloatBaseActorValue(8)))
+        if self.dialogues then self.dialogues:close(1) end
+        if self.inventories then self.inventories[1]:close() end
+        self:release_activation(1)
+        Actions.release(pawn,self.host_actions)
+        pawn.PairedPawnMovementComponent:ResetOffsetMovementInput()
+        pawn.PairedPawnMovementComponent:StopSprint()
+    end
+    local recovery=self.host_recovery
+    if recovery then
+        if not dead and values:GetFloatModifiedActorValue(8)>0 then
+            self.host_downed,self.host_revive_until,self.host_recovery=nil,nil,nil
+        elseif not dead and not recovery.healing then
+            self:command("player.forceav health "..self.host_health)
+            recovery.healing=true
+        elseif now>=recovery.deadline then
+            self.host_recovery=nil
+        end
+    elseif dead then
+        local expired=self.host_revive_until and now>=self.host_revive_until
+        if expired then self.host_revive_until=nil end
+        if (expired and not (self.revive_hold and self.revive_hold.by==2))
+            or buttons & 4096~=0 and (self.host_buttons or 0) & 4096==0 then
+            self:request_host_recovery(true)
+        end
+        if expired and self.revive_hold and self.revive_hold.by==2 then self.host_revive_until=now end
+    elseif values:GetFloatModifiedActorValue(8)>0 then
+        self.host_downed,self.host_revive_until=nil,nil
+    end
+    self.host_buttons=buttons
+    return true
+end
+
+function Engine:input_revive(player,buttons)
+    local hold=self.revive_hold
+    local eligible=buttons & 16384~=0 and (player==1 and self:can_revive_guest()
+        or player==2 and self:can_revive_host())
+    if not eligible then
+        if hold and hold.by==player then self.revive_hold=nil end
+        return false
+    end
+    local now=self.native.clock_ms()
+    if not hold or hold.by~=player then
+        self:release_activation(player)
+        if player==2 then self:cancel_guest_interaction() end
+        self.revive_hold={by=player,until_time=now+revive_hold_time}
+    elseif now>=hold.until_time then
+        self.revive_hold=nil
+        if player==1 then self:request_guest_recovery(false) else self:request_host_recovery(false) end
+    end
+    return true
+end
+
 function Engine:input_host(pad,dt)
     local host=self:host()
     if not valid(host) or not pad or not pad.connected or pad.slot~=self:host_slot() then return false end
     self.host_controller_name=pad.simulated and "DualSense" or pad.name
     local buttons=pad.buttons or 0
+    if self:input_host_recovery(host,buttons) then return true end
     if self.guest_interaction and (buttons~=0 or math.abs(pad.rx or 0)>5000 or math.abs(pad.ry or 0)>5000
         or math.abs(pad.lx or 0)>5000 or math.abs(pad.ly or 0)>5000) then self:cancel_guest_interaction() end
     if buttons & 16384==0 then self:release_activation(1) end
     if not self:gameplay_input_enabled() then
+        if self.revive_hold and self.revive_hold.by==1 then self.revive_hold=nil end
         self.host_door=nil
         host.Pawn.PairedPawnMovementComponent:ResetOffsetMovementInput()
         Actions.release(host.Pawn,self.host_actions)
@@ -1296,8 +1439,8 @@ function Engine:input_host(pad,dt)
     move_from_view(host.Pawn,x,y,yaw)
     if pressed(4096) then host.Pawn:Jump() end
     if released(4096) then host.Pawn:StopJumping() end
-    if pressed(16384) and not self.activation and not self.guest_dialogue
-        and not self:request_guest_recovery(false) then
+    local reviving=self:input_revive(1,buttons)
+    if pressed(16384) and not reviving and not self.activation and not self.guest_dialogue then
         local address=self:host_activation_target_address()
         local target
         if self.experimental_dialogue or address==nil then target=self:host_interaction_target() end
@@ -1334,7 +1477,15 @@ function Engine:input(pad,dt)
     if not valid(self.pc) or not valid(self.camera) then return false end
     local buttons=pad.buttons or 0
     local gameplay_enabled=self:gameplay_input_enabled()
-    if gameplay_enabled and self:input_guest_recovery(buttons) then return true end
+    if not self.loading and (gameplay_enabled or self.host_downed or self.guest_downed or self.actor:IsDead())
+        and self:input_guest_recovery(buttons) then return true end
+    local reviving=self:input_revive(2,not self.loading and (gameplay_enabled or self.host_downed) and buttons or 0)
+    if reviving then
+        self.actor.PairedPawnMovementComponent:ResetOffsetMovementInput()
+        self.last_buttons=buttons
+        self:update_camera()
+        return true
+    end
     if self.recover_equipment then self:poll_guest_equipment(); return true end
     if self.guest_crossing then self.last_buttons=buttons; return true end
     if buttons & 16384==0 then self:release_activation(2) end
@@ -1519,6 +1670,7 @@ function Engine:wait_for_guest()
     return true
 end
 function Engine:suspend()
+    self.revive_hold=nil
     self.interaction_notice=nil
     self:cancel_guest_interaction()
     self:restore_guest_npc_animation()
@@ -1554,7 +1706,10 @@ end
 function Engine:resume(slot) self.slot=slot; self.last_buttons=0 end
 function Engine:rollback()
     self.interaction_notice=nil
-    self.guest_downed,self.guest_recovery=nil,nil
+    self.guest_downed,self.guest_revive_until,self.guest_recovery=nil,nil,nil
+    self.host_downed,self.host_revive_until,self.host_recovery=nil,nil,nil
+    self.revive_hold=nil
+    self.hotel_life,self.hotel_life_request,self.hotel_life_next=nil,nil,nil
     self:cancel_guest_interaction()
     self:restore_guest_npc_animation()
     self.host_door,self.host_travel=nil,nil

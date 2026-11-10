@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -22,6 +23,7 @@ constexpr Addr console_entry = 0x08FC21F0, console_original = 0x06A0C2B0;
 constexpr Addr form_rtti = 0x08FE4BC8;
 Addr image;
 bool ready;
+std::atomic<U> skipped_actor_candidates{0};
 
 template<class T> T game(Addr rva) { return reinterpret_cast<T>(image+rva); }
 template<class T> T get(const void* object, size_t offset) {
@@ -40,6 +42,33 @@ unsigned state(P area) { return get<unsigned char>(area,0x7B); }
 bool interior(P area) { return (get<unsigned char>(area,0x79)&1)!=0; }
 bool attached(P area) { return state(area)==5 || state(area)==6; }
 bool paired(P ref) { return get<bool>(ref,0x40); }
+bool dead(P actor) {
+    if(type(actor)!=0x32) return false;
+    const auto vtable=get<P>(actor,0);
+    // The stock GetDead command checks the actor and then its life state.
+    return get<bool(*)(P)>(vtable,0x350)(actor) && get<bool(*)(P,bool)>(vtable,0x360)(actor,true);
+}
+bool scanned_actor_dead(P actor,bool include_unconscious) {
+    using Predicate=bool(*)(P,bool);
+    Predicate check=nullptr;
+    // A background cell transition can leave a freed actor in this scan.
+    // Validate the dispatch target before invoking the game's predicate.
+    __try {
+        if(actor) check=get<Predicate>(get<P>(actor,0),0x360);
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        check=nullptr;
+    }
+    const auto address=reinterpret_cast<Addr>(check);
+    if(address>=image+0x1000 && address<image+0x06D94AD7) return check(actor,include_unconscious);
+    MEMORY_BASIC_INFORMATION memory{};
+    if(check && VirtualQuery(reinterpret_cast<P>(check),&memory,sizeof memory) && memory.State==MEM_COMMIT
+        && !(memory.Protect&PAGE_GUARD)
+        && (memory.Protect&(PAGE_EXECUTE|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY))) {
+        return check(actor,include_unconscious);
+    }
+    skipped_actor_candidates.fetch_add(1,std::memory_order_relaxed);
+    return false;
+}
 P base_form(P ref) {
     return get<P(*)(P)>(get<P>(ref,0),0x62*sizeof(P))(ref);
 }
@@ -98,6 +127,8 @@ bool actor_position(U ref,U request) {
     std::ostringstream out;
     header(out,ref,request);
     out << ",\"cell_ref\":" << id(area) << ",\"interior\":" << yes(interior(area))
+        << ",\"dead\":" << yes(dead(actor))
+        << ",\"skipped_actor_candidates\":" << skipped_actor_candidates.load(std::memory_order_relaxed)
         << ",\"actor_paired\":" << yes(paired(actor))
         << ",\"actor_has_pairing_entry\":" << yes(get<P>(actor,0x48)!=nullptr) << ",\"cell\":";
     cell_state(out,area);
@@ -183,6 +214,7 @@ bool prepare(U area,U step) {
     }
     return false;
 }
+
 struct Landing { double x,y,z; };
 std::mutex transform_mutex;
 Addr held;
@@ -401,7 +433,7 @@ bool write(void* target,const void* data,size_t size) {
     VirtualProtect(target,size,old,&old);
     return true;
 }
-struct CallPatch { Addr site,original; Addr hook; std::array<unsigned char,5> before,after; };
+struct CallPatch { Addr site,original; Addr hook; size_t length; std::array<unsigned char,6> before,after; };
 bool install(const OBSEInterface* obse) {
     auto* entry=game<char*>(console_entry);
     const auto name=get<const char*>(entry,0);
@@ -410,15 +442,21 @@ bool install(const OBSEInterface* obse) {
         || params!=game<P>(0x08FB89D0) || get<U>(params,8)!=0 || get<Addr>(entry,0x30)!=image+console_original) return false;
     auto* api=static_cast<OBSETrampolineInterface*>(obse->QueryInterface(kInterface_Trampoline));
     if(!api || api->interfaceVersion<1 || !api->AllocateFromBranchPool) return false;
-    std::array<CallPatch,3> patches{{
-        {0x048B97C2,0x048CCC90,reinterpret_cast<Addr>(&transform),{},{}},
-        {0x048D1A5B,0x048CCC90,reinterpret_cast<Addr>(&transform),{},{}},
-        {0x0665FC8C,0x06654230,reinterpret_cast<Addr>(&queue_cell),{},{}},
+    std::array<CallPatch,4> patches{{
+        {0x048B97C2,0x048CCC90,reinterpret_cast<Addr>(&transform),5,{},{}},
+        {0x048D1A5B,0x048CCC90,reinterpret_cast<Addr>(&transform),5,{},{}},
+        {0x0665FC8C,0x06654230,reinterpret_cast<Addr>(&queue_cell),5,{},{}},
+        {0x06680F90,0,reinterpret_cast<Addr>(&scanned_actor_dead),6,{},{}},
     }};
     for(auto& patch:patches) {
         auto* site=game<char*>(patch.site);
-        if(get<unsigned char>(site,0)!=0xE8 || patch.site+5+get<std::int32_t>(site,1)!=patch.original) return false;
-        std::memcpy(patch.before.data(),site,patch.before.size());
+        if(patch.original) {
+            if(get<unsigned char>(site,0)!=0xE8 || patch.site+5+get<std::int32_t>(site,1)!=patch.original) return false;
+        } else {
+            constexpr unsigned char virtual_call[]={0xFF,0x90,0x60,0x03,0,0};
+            if(std::memcmp(site,virtual_call,sizeof virtual_call)) return false;
+        }
+        std::memcpy(patch.before.data(),site,patch.length);
     }
     auto* stubs=static_cast<unsigned char*>(api->AllocateFromBranchPool(obse->GetPluginHandle(),patches.size()*16));
     if(!stubs) return false;
@@ -431,20 +469,21 @@ bool install(const OBSEInterface* obse) {
         std::memcpy(stub,jump,sizeof jump);
         std::memcpy(stub+sizeof jump,&patch.hook,sizeof patch.hook);
         patch.after[0]=0xE8;
+        patch.after[5]=0x90;
         const auto disp=static_cast<std::int32_t>(delta);
         std::memcpy(patch.after.data()+1,&disp,sizeof disp);
     }
     FlushInstructionCache(GetCurrentProcess(),stubs,patches.size()*16);
     size_t installed=0;
     for(const auto& patch:patches) {
-        if(!write(game<P>(patch.site),patch.after.data(),patch.after.size())) break;
+        if(!write(game<P>(patch.site),patch.after.data(),patch.length)) break;
         ++installed;
     }
     const Command hook=bridge;
     if(installed==patches.size() && write(entry+0x30,&hook,sizeof hook)) return true;
     while(installed) {
         const auto& patch=patches[--installed];
-        write(game<P>(patch.site),patch.before.data(),patch.before.size());
+        write(game<P>(patch.site),patch.before.data(),patch.length);
     }
     return false;
 }

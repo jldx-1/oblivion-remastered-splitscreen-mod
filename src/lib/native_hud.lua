@@ -301,32 +301,61 @@ function HUD:update_interaction_prompt(visible)
 end
 function HUD:update_recovery_prompts(visible)
  local adapter=self.adapter
- local messages={}
- if visible and adapter.guest_downed then
-  local recovery=adapter.guest_recovery
-  if recovery then
-   messages[2]=recovery.respawn and "Respawning…" or "Player 1 is reviving you…"
-  else
-   local guest_style=controller_style(adapter.guest_controller_name)
-   local guest_button=guest_style=="playstation" and "Cross" or guest_style=="xbox" and "A" or "Bottom face button"
-   local notice=adapter.interaction_notice
-   if not notice or adapter.native.clock_ms()>=adapter.interaction_notice_until then notice="Player 2 is down" end
-   messages[2]=notice.."\n"..guest_button.."  Respawn"
-   if adapter:can_revive_guest() then
-    local host_style=controller_style(adapter.host_controller_name)
-    local host_button=host_style=="playstation" and "Square" or host_style=="xbox" and "X" or "Left face button"
-    messages[1]=host_button.."  Revive Player 2"
-   end
-  end
- end
+ local down={adapter.host_downed,adapter.guest_downed}
+ local recoveries={adapter.host_recovery,adapter.guest_recovery}
+ local deadlines={adapter.host_revive_until,adapter.guest_revive_until}
+ local styles={controller_style(adapter.host_controller_name),controller_style(adapter.guest_controller_name)}
+ local now=adapter.native.clock_ms()
  self.recovery_prompts=self.recovery_prompts or {}
+ self.recovery_shades=self.recovery_shades or {}
  for player=1,2 do
+  local shade=self.recovery_shades[player]
+  if visible and down[player] then
+   if not valid(shade) then
+    shade=StaticConstructObject(StaticFindObject("/Script/UMG.Border"),self.canvas)
+    shade:SetBrushColor({R=0.10,G=0.10,B=0.10,A=0.40})
+    local slot=self.canvas:AddChildToCanvas(shade)
+    slot:SetOffsets({Left=0,Top=0,Right=0,Bottom=0})
+    slot:SetZOrder(20)
+    self.recovery_shades[player]=shade
+   end
+   shade.Slot:SetAnchors(Layout.anchors(adapter.layout,player))
+   shade:SetVisibility(3)
+  elseif valid(shade) then shade:SetVisibility(1) end
+
   local prompt=self.recovery_prompts[player]
-  local message=messages[player]
+  local message
+  if visible and down[player] then
+   local recovery=recoveries[player]
+   if recovery then
+    message=recovery.respawn and "Respawning…" or ("Player %d is reviving you…"):format(3-player)
+   else
+    local style=styles[player]
+    local button=style=="playstation" and "Cross" or style=="xbox" and "A" or "Bottom face button"
+    local notice=player==2 and adapter.interaction_notice and now<adapter.interaction_notice_until and adapter.interaction_notice
+    message=button.."  Respawn now"
+    if notice then message=notice.."\n"..message end
+    if deadlines[player] then
+     message=("Waiting for revive (%ds)\n"):format(math.max(0,math.ceil((deadlines[player]-now)/1000)))..message
+    end
+    local hold=adapter.revive_hold
+    if hold and hold.by==3-player then
+     message=message..("\nReviving (%ds)"):format(math.max(0,math.ceil((hold.until_time-now)/1000)))
+    end
+   end
+  elseif visible and (player==1 and down[2] and adapter:can_revive_guest() or player==2 and down[1] and adapter:can_revive_host()) then
+   local style=styles[player]
+   local button=style=="playstation" and "Square" or style=="xbox" and "X" or "Left face button"
+   local hold=adapter.revive_hold
+   local seconds=hold and hold.by==player and math.max(0,math.ceil((hold.until_time-now)/1000)) or 10
+   message=("Hold %s to revive Player %d (%ds)"):format(button,3-player,seconds)
+  end
   if message then
    if not valid(prompt) then
     prompt=prompt_label(self.canvas)
-    self.canvas:AddChildToCanvas(prompt):SetOffsets({Left=12,Top=0,Right=12,Bottom=0})
+    local slot=self.canvas:AddChildToCanvas(prompt)
+    slot:SetOffsets({Left=12,Top=0,Right=12,Bottom=0})
+    slot:SetZOrder(21)
     self.recovery_prompts[player]=prompt
    end
    prompt.Slot:SetAnchors(Layout.anchors(adapter.layout,player,0.60,0.78))
@@ -360,10 +389,10 @@ function HUD:inventory_snapshot(adapter)
  return self.inventory
 end
 function HUD:destroy()
- for _,prompt in pairs(self.recovery_prompts or {}) do
-  if valid(prompt) then prompt:RemoveFromParent() end
+ for _,widgets in ipairs({self.recovery_prompts or {},self.recovery_shades or {}}) do
+  for _,widget in pairs(widgets) do if valid(widget) then widget:RemoveFromParent() end end
  end
- self.recovery_prompts=nil
+ self.recovery_prompts,self.recovery_shades=nil,nil
  if valid(self.subtitle) then self.subtitle:RemoveFromParent() end
  self.subtitle,self.subtitle_text,self.original_subtitle=nil,nil,nil
  if valid(self.interaction_prompt) then self.interaction_prompt:RemoveFromParent() end
@@ -395,7 +424,7 @@ function HUD:update(session)
  if valid(self.original_reticle) then self.original_reticle:SetVisibility(1) end
  self:update_subtitle(visible)
  self:update_interaction_prompt(visible and session.state=="active")
- self:update_recovery_prompts(visible and session.state=="active")
+ self:update_recovery_prompts(session.state=="active" and (visible or adapter.host_downed and not adapter.loading))
  if not visible then return end
  self:apply_layout(adapter.layout)
  local values=adapter.actor.ActorValuesPairingComponent

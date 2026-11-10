@@ -32,7 +32,7 @@ Use the Windows version of Oblivion Remastered from Steam. The installer checks 
 
 Aim at an object and press **Square** on Player 2’s controller. Supported loose items show **Take** and go into Player 2’s inventory.
 
-When Player 2 goes down, Player 1 can get close and press **Square** to revive them. Player 2 can press **Cross** to respawn. Respawn brings them beside Player 1 when the area allows it. If Player 1 is out of reach, the mod attempts recovery where Player 2 fell.
+When either player dies, their pane dims and shows a 30-second revive countdown. The surviving player can approach and hold **Square** for 10 seconds to revive them. The downed player can press **Cross** to respawn immediately, or wait for the countdown to expire. Player 2 can respawn beside Player 1 outside the Tiber Septim Hotel with their equipment and inventory intact.
 
 With OBSE64 running, Player 2 can enter and leave the Tiber Septim Hotel through its front door while Player 1 remains outside in Talos Plaza. Leave the doorway clear when Player 2 returns outside. Aim at a nearby NPC and press **Square** to open Player 2’s dialogue pane with voiced responses for supported topics. Quest-changing dialogue and independent travel through other loading doors are still in development.
 

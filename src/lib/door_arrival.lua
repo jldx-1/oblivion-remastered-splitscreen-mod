@@ -44,11 +44,11 @@ function DoorArrival.matches_native(link,actor,tolerance)
     return (position[1]-arrival[1])^2+(position[2]-arrival[2])^2+(position[3]-arrival[3])^2<=(tolerance or 32)^2
 end
 
-function DoorArrival.origin_offset(link,actor)
+function DoorArrival.origin_offset(link,actor,max_distance)
     local source,position=link.source_position,actor.native_position
     if not triple(source) or not triple(position) then return end
     local x,y,z=position[1]-source[1],position[2]-source[2],position[3]-source[3]
-    if x*x+y*y+z*z>400^2 then return end
+    if x*x+y*y+z*z>(max_distance or 400)^2 then return end
     return {x,y,z}
 end
 

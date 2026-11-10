@@ -33,6 +33,7 @@ local function release_hold(adapter,pending)
 end
 local function finish(adapter,pending,reason)
     adapter.guest_crossing=nil
+    pending.completed=not reason
     local ok,err=pcall(function()
         if reason and pending.origin and (not pending.native_membership or pending.committed)
             and Fixtures.rendered_door(adapter,pending.source) then
@@ -56,7 +57,7 @@ function Travel.cancel(adapter)
     release_hold(adapter,pending)
 end
 
-function Travel.begin(adapter,source,source_cell,link,guest_sewer_transfer,guest_attached_transfer)
+function Travel.begin(adapter,source,source_cell,link,guest_sewer_transfer,guest_attached_transfer,recovery)
     local fixture=Fixtures.match(source,link)
     local attached=guest_attached_transfer==true
     local sewer=not attached and fixture==Fixtures.sewers and guest_sewer_transfer==true
@@ -64,14 +65,34 @@ function Travel.begin(adapter,source,source_cell,link,guest_sewer_transfer,guest
     local destination=Fixtures.rendered_door(adapter,link.destination_ref)
     if not destination then return end
     local half=adapter.actor.CapsuleComponent:GetScaledCapsuleHalfHeight()
-    local position,rotation=Arrival.resolve(link,destination:K2_GetActorLocation(),destination:K2_GetActorRotation(),half)
+    local door_position,door_rotation=destination:K2_GetActorLocation(),destination:K2_GetActorRotation()
+    local position,rotation=Arrival.resolve(link,door_position,door_rotation,half)
+    if recovery and position and not clear_of_host(adapter,position) then
+        local original_offset,original_arrival=link.arrival_offset,link.arrival
+        local trace=StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
+        local clear={R=0,G=0,B=0,A=0}
+        local host=adapter:host().Pawn
+        local start=position
+        for _,offset in ipairs({{90,0},{-90,0},{0,90},{0,-90}}) do
+            link.arrival_offset={original_offset[1]+offset[1],original_offset[2]+offset[2],original_offset[3]}
+            link.arrival={original_arrival[1]+offset[1],original_arrival[2]+offset[2],original_arrival[3]}
+            position,rotation=Arrival.resolve(link,door_position,door_rotation,half)
+            if position and clear_of_host(adapter,position)
+                and not trace:SphereTraceSingle(host,start,position,40,0,false,{host,adapter.actor},0,{},true,clear,clear,0) then
+                break
+            end
+            position=nil
+        end
+        if not position then link.arrival_offset,link.arrival=original_offset,original_arrival end
+    end
     if not position or not clear_of_host(adapter,position) then return end
     local now=adapter.native.clock_ms()
     local pending={actor=adapter.actor_ref,source=source,source_cell=source_cell,link=link,
         position=position,rotation=rotation,request=800000000+now%100000000,deadline=now+650,
-        sewer_transfer=sewer,attached_transfer=attached,native_membership=sewer or attached}
+        sewer_transfer=sewer,attached_transfer=attached,native_membership=sewer or attached,recovery=recovery}
     adapter.guest_crossing=pending
     adapter:command(query(pending))
+    return pending
 end
 
 function Travel.poll(adapter,now)
@@ -100,12 +121,12 @@ function Travel.poll(adapter,now)
     local actor=raw and json.decode(raw)
     if not actor or actor.actor_ref~=id or actor.request~=pending.request then return end
     if not pending.origin then
-        if adapter:guest_door_target()~=pending.source or not clear_of_host(adapter,pending.position)
+        if (not pending.recovery and adapter:guest_door_target()~=pending.source) or not clear_of_host(adapter,pending.position)
             or ((actor.interior or pending.link.source_cell.interior or pending.sewer_transfer)
                 and actor.cell_ref~=pending.source_cell) then
             return finish(adapter,pending,"Player 2 door approach changed")
         end
-        local origin=Arrival.origin_offset(pending.link,actor)
+        local origin=Arrival.origin_offset(pending.link,actor,pending.recovery and math.huge or nil)
         if not origin then return finish(adapter,pending,"Player 2 door origin could not be verified") end
         local movement=adapter.actor.PairedPawnMovementComponent
         movement:ResetOffsetMovementInput()
