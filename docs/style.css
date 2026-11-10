@@ -1,0 +1,34 @@
+:root{color-scheme:dark;--bg:#14110f;--panel:#211b17;--ink:#fbf0de;--muted:#c6b6a0;--line:#43362b;--accent:#e8b97a}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:1rem/1.65 system-ui,sans-serif}
+a{color:var(--accent);text-underline-offset:.2em}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+.shell{width:min(1120px,calc(100% - 2.5rem));margin-inline:auto}
+header,footer{display:flex;justify-content:space-between;align-items:center;gap:1rem;padding-block:1.15rem;border-bottom:1px solid var(--line)}
+.brand,nav a{color:var(--ink);text-decoration:none}
+.brand{font-weight:750}
+nav{display:flex;gap:clamp(.75rem,3vw,1.75rem);flex-wrap:wrap}
+.hero,.install{display:grid;grid-template-columns:1fr 1fr;align-items:center;gap:clamp(1.75rem,5vw,4.5rem)}
+.hero{padding-block:clamp(3rem,8vw,6rem)}
+h1,h2{font:500 clamp(2.25rem,5vw,4.3rem)/1.03 Georgia,serif;letter-spacing:-.035em;margin:0}
+h2{font-size:clamp(2rem,4vw,3.25rem)}
+.eyebrow{margin:0 0 .9rem;color:var(--accent);font-size:.77rem;font-weight:750;letter-spacing:.14em;text-transform:uppercase}
+.lead,.status p{max-width:60ch;color:var(--muted)}
+.lead{margin:1.35rem 0}
+.download{display:inline-block;padding:.8rem 1.1rem;border-radius:.3rem;background:var(--accent);color:#19120c;font-weight:750;text-decoration:none}
+.download:hover{background:#f6d1a2}
+.note{margin:.6rem 0 0;color:var(--muted);font-size:.88rem}
+.band{padding-block:clamp(2rem,5vw,3.5rem);border-top:1px solid var(--line)}
+.gallery{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1.6rem}
+figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:.45rem;overflow:hidden}
+img{display:block;width:100%;height:auto}
+.hero-image{border:1px solid var(--line);border-radius:.45rem;box-shadow:0 1rem 2rem #0006}
+figcaption{display:flex;flex-direction:column;padding:.75rem 1rem}
+figcaption span,li,footer{color:var(--muted)}
+li+li{margin-top:.6rem}
+li strong{color:var(--ink)}
+code{overflow-wrap:anywhere}
+footer{border-top:1px solid var(--line);border-bottom:0;font-size:.88rem}
+@media(max-width:760px){.hero,.install,.gallery{grid-template-columns:1fr}header,footer{align-items:flex-start;flex-direction:column}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}

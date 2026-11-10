@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="An experimental two-player split-screen mod for Oblivion Remastered on Windows.">
+  <title>Oblivion Remastered Local Split Screen</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="shell">
+    <a class="brand" href="#home">Local Split Screen</a>
+    <nav aria-label="Page navigation">
+      <a href="#layouts">Layouts</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/jldx-1/oblivion-remastered-splitscreen-mod">GitHub</a>
+    </nav>
+  </header>
+  <main id="home">
+    <section class="hero shell" aria-labelledby="title">
+      <div>
+        <p class="eyebrow">Windows preview · Steam build 1.512.105</p>
+        <h1 id="title">Oblivion Remastered<br>Local Split Screen</h1>
+        <p class="lead">Explore Cyrodiil with two controllers on one PC. Pick a split that fits your screen and give each player their own view and centered compass.</p>
+        <a class="download" href="download/LocalSplitScreen-Setup.exe" download>Download Windows installer</a>
+        <p class="note">Run the downloaded setup to install. <a href="download/LocalSplitScreen-Windows.zip" download>Manual ZIP</a></p>
+      </div>
+      <img class="hero-image" src="media/left-right.webp" alt="Two side-by-side player views in Talos Plaza, each with its compass centered">
+    </section>
+    <section class="shell band" id="layouts" aria-labelledby="layouts-title">
+      <p class="eyebrow">In-game layouts</p>
+      <h2 id="layouts-title">Choose your split</h2>
+      <div class="gallery">
+        <figure>
+          <img loading="lazy" src="media/left-right.webp" alt="Side-by-side views with Player 1 on the left and Player 2 on the right">
+          <figcaption><strong>Left / Right</strong><span>Player 1 on the left, Player 2 on the right.</span></figcaption>
+        </figure>
+        <figure>
+          <img loading="lazy" src="media/top-bottom.webp" alt="Stacked views with a compass centered at the top of each half">
+          <figcaption><strong>Top / Bottom</strong><span>Player 1 above Player 2.</span></figcaption>
+        </figure>
+      </div>
+    </section>
+    <section class="shell band install" id="install" aria-labelledby="install-title">
+      <div>
+        <p class="eyebrow">Getting started</p>
+        <h2 id="install-title">Install and join</h2>
+        <ol>
+          <li>Close Oblivion Remastered. Download and run the Windows installer. It locates the Steam game or asks you to select the folder.</li>
+          <li>Launch the game normally from Steam and load a spare save. Connect two controllers.</li>
+          <li>Open <strong>System → Save &amp; Load → Split Screen</strong> with the mouse or controller. You can also press <strong>Triangle</strong> on the Save &amp; Load page.</li>
+          <li>Choose Player 2's character and a layout. Player 1's controller is preselected. Press <strong>Options</strong> on the other controller to start. Reopen the menu to switch layouts or choose <strong>Unpair Controllers</strong>.</li>
+        </ol>
+      </div>
+      <figure>
+        <img loading="lazy" src="media/settings.webp" alt="Split Screen menu with two controller rows, Player 2’s character, and the Top / Bottom option">
+        <figcaption><strong>Split Screen</strong><span>Use the D-pad and Cross, or click the menu rows.</span></figcaption>
+      </figure>
+    </section>
+    <section class="shell band status" aria-labelledby="status-title">
+      <h2 id="status-title">Preview status</h2>
+      <p>The installer includes the layout and controller preview, UE4SS and SDL. Per-player inventory requires a separately built OBSE64 backend. Independent travel, simultaneous dialogue, and a full playthrough with one USB and one Bluetooth DualSense are still in testing.</p>
+      <p>To disable the mod, close the game and set <code>LocalSplitScreen : 0</code> in <code>OblivionRemastered\Binaries\Win64\ue4ss\Mods\mods.txt</code>.</p>
+    </section>
+  </main>
+  <footer class="shell">
+    <span>Unofficial community project.</span>
+    <a href="https://github.com/jldx-1/oblivion-remastered-splitscreen-mod">Source and installation notes</a>
+  </footer>
+</body>
+</html>
