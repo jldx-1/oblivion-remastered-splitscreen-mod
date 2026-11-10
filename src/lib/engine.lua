@@ -398,7 +398,9 @@ function Engine:guest_aim()
     local actor=self.actor
     local location=actor:K2_GetActorLocation()
     local yaw,pitch=math.rad(self.yaw),math.rad(self.pitch)
-    local start={X=location.X,Y=location.Y,Z=location.Z+actor.BaseEyeHeight}
+    -- Use the pawn's eye height. The animated head can dip below the
+    -- capsule during running or transitions.
+    local start={X=location.X,Y=location.Y,Z=location.Z+actor.BaseEyeHeight+12}
     local direction={X=math.cos(yaw)*math.cos(pitch),Y=math.sin(yaw)*math.cos(pitch),Z=math.sin(pitch)}
     return start,direction
 end
@@ -436,6 +438,27 @@ function Engine:begin_shared_dialogue()
     host:ActivateInput_Pressed()
     self.activation=2
     self.guest_dialogue={deadline=self.native.clock_ms()+2000,speaker_ref=tonumber(ref,16)}
+    return true
+end
+function Engine:activate_shared_object()
+    if self.activation or self.guest_dialogue then return false end
+    local address=self:host_activation_target_address()
+    if not address or address==0 then return false end
+    local start,direction=self:guest_aim()
+    local stop={X=start.X+350*direction.X,Y=start.Y+350*direction.Y,Z=start.Z+350*direction.Z}
+    local host=self:host()
+    local ignore={}
+    ignore_actor(ignore,self.actor)
+    ignore_actor(ignore,host.Pawn)
+    local trace=StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
+    local hit,color={},{R=0,G=0,B=0,A=0}
+    if not trace:LineTraceSingle(self.actor,start,stop,0,false,ignore,0,hit,true,color,color,0) then return false end
+    local object=hit.HitObjectHandle.Actor:Get()
+    if not valid(object) or object:GetAddress()~=address
+        or object:IsA(StaticFindObject("/Script/Altar.VDoor"))
+        or object:IsA(StaticFindObject("/Script/Altar.VPairedPawn")) then return false end
+    host:ActivateInput_Pressed()
+    self.activation=2
     return true
 end
 local function aimed_door(adapter,pawn,other,start,direction)
@@ -813,17 +836,8 @@ function Engine:update_camera()
     local yaw,pitch=math.rad(self.yaw),math.rad(self.pitch)
     local host=self:host()
     local first_person=self.guest_pov==0
-    local distance=first_person and 0 or (self.guest_pov==1 and 200 or 320)
-    local eye_height=first_person and self.actor.BaseEyeHeight+12 or 100
-    local position={X=location.X-math.cos(yaw)*math.cos(pitch)*distance,Y=location.Y-math.sin(yaw)*math.cos(pitch)*distance,Z=location.Z+eye_height-math.sin(pitch)*distance}
-    if first_person then
-        local bone=host.Pawn.CameraBoneName
-        if self.actor.MainSkeletalMeshComponent:DoesSocketExist(bone) then
-            local head=self.actor.MainSkeletalMeshComponent:GetSocketLocation(bone)
-            -- Match the native first-person eye above the camera bone.
-            position={X=head.X,Y=head.Y,Z=head.Z+12}
-        end
-    end
+    local eye=self:guest_aim()
+    local position=eye
     local actors={self.actor}
     local attached={}
     self.actor:GetAttachedActors(attached,true,true)
@@ -834,7 +848,10 @@ function Engine:update_camera()
     local hide_self=first_person
     if not first_person then
         self.trace_library=self.trace_library or StaticFindObject("/Script/Engine.Default__KismetSystemLibrary")
-        local pivot={X=location.X,Y=location.Y,Z=location.Z+eye_height}
+        local pivot={X=location.X,Y=location.Y,Z=location.Z+100}
+        local distance=self.guest_pov==1 and 200 or 320
+        position={X=pivot.X-math.cos(yaw)*math.cos(pitch)*distance,
+            Y=pivot.Y-math.sin(yaw)*math.cos(pitch)*distance,Z=pivot.Z-math.sin(pitch)*distance}
         local pawn_clip=clip_to_other_player(pivot,position,host.Pawn)
         if pawn_clip then position=pawn_clip end
         local hit={}
@@ -846,17 +863,7 @@ function Engine:update_camera()
         if pawn_clip or (blocked and hit.Location) then
             self.camera_obstructed=true
             hide_self=(position.X-pivot.X)^2+(position.Y-pivot.Y)^2+(position.Z-pivot.Z)^2<80^2
-            if hide_self then
-                local bone=host.Pawn.CameraBoneName
-                if self.actor.MainSkeletalMeshComponent:DoesSocketExist(bone) then
-                    local head=self.actor.MainSkeletalMeshComponent:GetSocketLocation(bone)
-                    local ahead={X=head.X+math.cos(yaw)*28,Y=head.Y+math.sin(yaw)*28,Z=head.Z+3}
-                    local eye_hit={}
-                    local eye_blocked=self.trace_library:SphereTraceSingle(self.actor,{X=head.X,Y=head.Y,Z=head.Z+3},ahead,4,1,false,actors,0,eye_hit,true,
-                        {R=0,G=0,B=0,A=0},{R=0,G=0,B=0,A=0},0)
-                    position=eye_blocked and eye_hit.Location or ahead
-                end
-            end
+            if hide_self then position=eye end
         else self.camera_obstructed=false end
     end
     self.camera.CameraComponent:SetFieldOfView(host.PlayerCameraManager:GetFOVAngle())
@@ -1004,6 +1011,7 @@ function Engine:input(pad,dt)
         self.guest_door=nil
         if self.door_preload then require("lib.door_preload").cancel_crossing(self) end
         self.actor.PairedPawnMovementComponent:ResetOffsetMovementInput()
+        self:set_guest_speed()
         Actions.release(self.actor,self.guest_actions)
         local previous=self.last_buttons or 0
         if self.journal then self:input_shared_journal(2,buttons,previous)
@@ -1021,6 +1029,7 @@ function Engine:input(pad,dt)
     if buttons & 16~=0 and (self.last_buttons or 0) & 16==0 then
         if self.door_preload then require("lib.door_preload").cancel_crossing(self) end
         self.actor.PairedPawnMovementComponent:ResetOffsetMovementInput()
+        self:set_guest_speed()
         Actions.release(self.actor,self.guest_actions)
         self:host():OpenOptionsMenuInput_Pressed()
         self.last_buttons=buttons
@@ -1033,6 +1042,7 @@ function Engine:input(pad,dt)
         if self.door_preload then require("lib.door_preload").cancel_crossing(self) end
         Actions.release(self.actor,self.guest_actions)
         self.actor.PairedPawnMovementComponent:ResetOffsetMovementInput()
+        self:set_guest_speed()
         self.actor:SendBlock(false); self.blocking=false; self.attacking=false
         self.last_buttons=pad.buttons or 0; self:update_camera()
         return true
@@ -1049,9 +1059,14 @@ function Engine:input(pad,dt)
         self.force_run=running
     end
     local movement=self.actor.PairedPawnMovementComponent
-    self.base_speed_multiplier=self.base_speed_multiplier or movement:GetGlobalSpeedMultiplier()
-    local gait_multiplier=running and movement:GetMaxGroundRunSpeed()/math.max(1,movement:GetMaxGroundWalkSpeed()) or 1
-    movement:SetGlobalSpeedMultiplier(self.base_speed_multiplier*gait_multiplier)
+    local speed
+    if (x~=0 or y~=0) and movement:IsMovingOnGround() and not self.sneaking then
+        local host=self:host().Pawn.PairedPawnMovementComponent
+        if movement:IsSprinting() then speed=host:GetMaxGroundSprintSpeed()
+        elseif running then speed=host:GetMaxGroundRunSpeed()
+        else speed=host:GetMaxGroundWalkSpeed() end
+    end
+    self:set_guest_speed(speed)
     -- NPC locomotion consumes the paired component's offset, rather than the
     -- normal player input queue alone. This keeps movement on the paired actor.
     self.actor.PairedPawnMovementComponent:SetOffsetMovementInput({X=math.cos(yaw)*y-math.sin(yaw)*x,Y=math.sin(yaw)*y+math.cos(yaw)*x,Z=0})
@@ -1071,7 +1086,7 @@ function Engine:input(pad,dt)
         else
             talking=self:begin_shared_dialogue()
         end
-        if not talking then self:begin_guest_door() end
+        if not talking and not self:activate_shared_object() then self:begin_guest_door() end
     end
     if (buttons & 128)~=0 and (previous & 128)==0 then
         self.sneaking=not self.sneaking; self.actor:SetSneak(self.sneaking)
@@ -1090,6 +1105,13 @@ function Engine:input(pad,dt)
     self.last_buttons=buttons
     self:update_camera()
     return true
+end
+function Engine:set_guest_speed(speed)
+    if self.guest_speed==speed then return end
+    local movement=self.actor.PairedPawnMovementComponent
+    if speed then movement:SetOverrideMaxSpeed(speed)
+    else movement:ResetOverrideMaxSpeed() end
+    self.guest_speed=speed
 end
 function Engine:guest_inventory_snapshot()
     local id=self.actor_ref and tonumber(self.actor_ref,16)
@@ -1137,7 +1159,7 @@ function Engine:wait_for_guest()
         self:rollback()
         self.guest_unloaded=true
         self.parked_inventory=before
-        self.actor,self.base_speed_multiplier,self.force_run,self.pending_quiver=nil,nil,nil,nil
+        self.actor,self.force_run,self.pending_quiver,self.guest_speed=nil,nil,nil,nil
         self.log("Player 2's area unloaded. Waiting for the same character to become available.")
     end
     local now=self.native.clock_ms()
@@ -1185,8 +1207,7 @@ function Engine:suspend()
         if self.force_run then self:command(self.actor_ref..".setforcerun 0"); self.force_run=false end
         self.actor:SendBlock(false)
         self.actor.PairedPawnMovementComponent:ResetOffsetMovementInput()
-        self.actor.PairedPawnMovementComponent:ResetOverrideMaxSpeed()
-        if self.base_speed_multiplier then self.actor.PairedPawnMovementComponent:SetGlobalSpeedMultiplier(self.base_speed_multiplier) end
+        self:set_guest_speed()
         self.actor.PairedPawnMovementComponent:StopSprint()
         self.actor.PairedPawnMovementComponent:StopMovementImmediately()
     end
@@ -1246,8 +1267,7 @@ function Engine:rollback()
     if paired(self.actor) then
         if self.force_run then pcall(self.command,self,self.actor_ref..".setforcerun 0"); self.force_run=false end
         self.actor.PairedPawnMovementComponent:ResetOffsetMovementInput()
-        self.actor.PairedPawnMovementComponent:ResetOverrideMaxSpeed()
-        if self.base_speed_multiplier then self.actor.PairedPawnMovementComponent:SetGlobalSpeedMultiplier(self.base_speed_multiplier) end
+        self:set_guest_speed()
     end
     local gs=StaticFindObject("/Script/Engine.Default__GameplayStatics")
     if valid(self.pc) then self.pc:UnPossess(); gs:RemovePlayer(self.pc,false) end

@@ -245,6 +245,35 @@ test("the engine waits for the System menu pause to end before joining", functio
     assert(not e:world_ready())
     FindAllOf,StaticFindObject=previous_find,previous_static
 end)
+test("guest object activation only forwards the same non-door target",function()
+    local Engine=require("lib.engine")
+    local original_find=StaticFindObject
+    local cached,object_class,pressed=10,"object",0
+    local object={IsValid=function() return true end,GetAddress=function() return 10 end,
+        IsA=function(_,class) return object_class==class end}
+    local actor={IsValid=function() return true end,GetAttachedActors=function() end}
+    local traces={LineTraceSingle=function(_,_,_,_,_,_,_,_,hit)
+        hit.HitObjectHandle={Actor={Get=function() return object end}}
+        return true
+    end}
+    StaticFindObject=function(path)
+        if path:match("KismetSystemLibrary") then return traces end
+        return path
+    end
+    local e=Engine.new(nil,nil,nil)
+    e.actor=actor
+    e.host=function() return {Pawn=actor,ActivateInput_Pressed=function() pressed=pressed+1 end} end
+    e.host_activation_target_address=function() return cached end
+    e.guest_aim=function() return {X=0,Y=0,Z=0},{X=1,Y=0,Z=0} end
+    assert(e:activate_shared_object() and e.activation==2 and pressed==1)
+    assert(not e:activate_shared_object() and pressed==1)
+    e.activation=nil
+    cached=11
+    assert(not e:activate_shared_object() and pressed==1)
+    cached,object_class=10,"/Script/Altar.VDoor"
+    assert(not e:activate_shared_object() and pressed==1)
+    StaticFindObject=original_find
+end)
 test("settings require two distinct live controller instances",function()
     local UI=require("lib.ui")
     local chosen

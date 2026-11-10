@@ -332,6 +332,58 @@ function UI:mount()
     self.screen:AddToViewport(9000)
     self.mounted=true; return true
 end
+function UI:update_guest_dialogue(adapter,active)
+    local dialogue=active and adapter.guest_dialogue
+    local menu=dialogue and dialogue.menu
+    local vm=valid(menu) and menu:IsActivated() and menu:IsVisible() and menu.VDialogueMenuViewModel
+    if not valid(vm) then
+        if valid(self.guest_dialogue_panel) then self.guest_dialogue_panel:SetVisibility(1) end
+        return
+    end
+    if not valid(self.guest_dialogue_panel) then
+        local tree=self.screen.WidgetTree
+        local panel=make(tree,"Border")
+        panel:SetBrushColor({R=0.045,G=0.031,B=0.019,A=0.96})
+        panel:SetPadding({Left=14,Top=10,Right=14,Bottom=10})
+        local box=make(tree,"VerticalBox")
+        local scroll=make(tree,"ScrollBox")
+        local title,body=label(tree,""),label(tree,"")
+        body:SetAutoWrapText(true)
+        box:AddChildToVerticalBox(title):SetPadding({Left=0,Top=0,Right=0,Bottom=6})
+        box:AddChildToVerticalBox(body)
+        scroll:AddChild(box)
+        panel:AddChild(scroll)
+        self.canvas:AddChildToCanvas(panel):SetOffsets({Left=18,Top=0,Right=18,Bottom=0})
+        self.guest_dialogue_panel,self.guest_dialogue_title,self.guest_dialogue_body=panel,title,body
+        self.guest_dialogue_text=nil
+    end
+    local rows={}
+    local subtitle=vm.Subtitle:ToString()
+    if vm.bSubtitleVisibility and subtitle~="" then rows[#rows+1]=subtitle end
+    local list=menu.dialog_scrollbox
+    if valid(list) and list:IsVisible() then
+        local focus=list:GetFocusElementIndex()
+        local first=math.max(1,focus-2)
+        if first>1 then rows[#rows+1]="…" end
+        vm.Responses:ForEach(function(index,response)
+            if index>=first and index<first+6 then
+                local text=response:get().ResponseText:ToString()
+                rows[#rows+1]=(index-1==focus and ">  " or "    ")..text
+            end
+        end)
+        if #vm.Responses>=first+6 then rows[#rows+1]="…" end
+    end
+    rows[#rows+1]="D-pad  Select     Cross  Continue     Circle  Close"
+    local title,body=vm.SpeakerName:ToString(),table.concat(rows,"\n")
+    local text=title.."\n"..body
+    if self.guest_dialogue_text~=text then
+        self.guest_dialogue_title:SetText(FText(title))
+        self.guest_dialogue_body:SetText(FText(body))
+        self.guest_dialogue_text=text
+    end
+    self.guest_dialogue_panel.Slot:SetAnchors(Layout.anchors(adapter.layout,2,0.58,0.94))
+    self.guest_dialogue_panel:SetVisibility(4)
+end
 function UI:update(session)
     if not self:mount() then return end
     local adapter=session.adapter
@@ -353,6 +405,7 @@ function UI:update(session)
         if adapter.dialogues then adapter.dialogues:destroy(); adapter.dialogues=nil end
     end
     self.hud:update(session)
+    self:update_guest_dialogue(adapter,session.state=="active" and not adapter.guest_unloaded)
 end
 function UI:destroy()
     if valid(self.screen) then self.screen:RemoveFromParent() end
