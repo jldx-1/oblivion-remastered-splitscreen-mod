@@ -8,10 +8,10 @@ An experimental Windows mod for two players on one PC.
 
 ## Install from the ZIP on Windows
 
-Use the Windows version of Oblivion Remastered from Steam. The installer checks compatibility before copying files.
+Use the Windows version of Oblivion Remastered from Steam. The installer checks compatibility before copying files. For Player 2’s voiced conversations, separate inventory, and supported hotel travel, install [stock OBSE64 from its author](https://www.nexusmods.com/oblivionremastered/mods/282). Follow its instructions to put the loader and runtime beside the game executable in `OblivionRemastered\Binaries\Win64`. The mod download includes the split-screen plugin.
 
 1. Close Oblivion Remastered and [download the Windows ZIP](https://jldx-1.github.io/oblivion-remastered-splitscreen-mod/docs/download/LocalSplitScreen-Windows.zip).
-2. In File Explorer, right-click the ZIP and select **Extract All**. Open the extracted folder. It should contain **Install.ps1** and a **payload** folder. Keep them together. The installer uses the payload to place the loader and mod files in the game's `OblivionRemastered\Binaries\Win64` folder.
+2. In File Explorer, right-click the ZIP and select **Extract All**. Open the extracted folder. It should contain **Install.ps1** and a **payload** folder. Keep them together. The installer uses the payload to place UE4SS, the OBSE64 plugin, and the mod files in the game's `OblivionRemastered\Binaries\Win64` folder.
 3. Open **Windows PowerShell** as administrator. In File Explorer, copy the path of the extracted folder from the address bar. Paste it into the first command below, replacing the example path, then run both commands.
 
    ```powershell
@@ -26,12 +26,21 @@ Use the Windows version of Oblivion Remastered from Steam. The installer checks 
    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\Install.ps1 -GameDirectory "<paste the Steam game folder path here>"
    ```
 
-5. After PowerShell prints **Installed Local Split Screen**, launch the game from Steam and load a spare save. With both controllers connected, open **System → Save & Load → Split Screen**. Choose a layout and press **Options** on Player 2’s controller to start.
+5. After PowerShell prints **Installed Local Split Screen**, start Steam, run `obse64_loader.exe` from the game’s `Win64` folder, and load a spare save. With both controllers connected, open **System → Save & Load → Split Screen**. Choose a layout and press **Options** on Player 2’s controller to start.
 
 ## Player 2 interactions
 
 Aim at an object and press **Square** on Player 2’s controller. Supported loose items show **Take** and go into Player 2’s inventory.
 
-The separate voiced conversation pane and independent travel through the Tiber Septim Hotel front door require the matching local split-screen backend and an OBSE64 launch. The Windows downloads contain the mod scripts. The matching backend is a separate local build. The stock OBSE64 download alone does not provide the split-screen backend. [OBSE64 distribution policy](https://github.com/ianpatt/obse64/blob/master/obse64_readme.txt)
+With OBSE64 running, Player 2 can enter and leave the Tiber Septim Hotel through its front door while Player 1 remains outside in Talos Plaza. Leave the doorway clear when Player 2 returns outside. Aim at a nearby NPC and press **Square** to open Player 2’s dialogue pane with voiced responses for supported topics. Quest-changing dialogue and independent travel through other loading doors are still in development.
+
+If you see a message that a feature is unavailable in this launch, make sure you started with `obse64_loader.exe` and that `OBSE\Plugins\LocalSplitScreenBackend.dll` is present under the game’s `Win64` folder.
+
+To build the standalone OBSE64 plugin from source with Visual Studio Build Tools and CMake:
+
+```powershell
+cmake -S src/backend/plugin -B build-obse-plugin -A x64
+cmake --build build-obse-plugin --config Release
+```
 
 [SHA-256 checksums for the Windows downloads](https://jldx-1.github.io/oblivion-remastered-splitscreen-mod/docs/download/SHA256SUMS.txt)

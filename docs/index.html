@@ -51,7 +51,7 @@
         <h2 id="install-title">Install and join</h2>
         <ol>
           <li>Close Oblivion Remastered. Download and run the Windows installer. It locates the Steam game or asks you to select the folder. The unsigned installer may show a Windows security prompt.</li>
-          <li>Launch the game normally from Steam and load a spare save. Connect two controllers.</li>
+          <li>Install <a href="https://www.nexusmods.com/oblivionremastered/mods/282">stock OBSE64</a> using its author’s instructions. Start Steam, then run <code>obse64_loader.exe</code> from the game’s <code>Win64</code> folder. Load a spare save and connect two controllers.</li>
           <li>Open <strong>System → Save &amp; Load → Split Screen</strong> with the mouse or controller. You can also press <strong>Triangle</strong> on the Save &amp; Load page.</li>
           <li>Choose Player 2's character and a layout. Player 1's controller is preselected. Press <strong>Options</strong> on the other controller to start. Reopen the menu to switch layouts or choose <strong>Unpair Controllers</strong>.</li>
         </ol>
@@ -65,8 +65,8 @@
     <section class="shell band status" aria-labelledby="status-title">
       <h2 id="status-title">Preview status</h2>
       <p>Two physical DualSense controllers were used to verify menu navigation and pairing. Both compasses show shared map markers and follow their own camera headings. Marker distances still come from Player 1’s position.</p>
-      <p>Both controllers use the same walk, run, and sprint controls. Each character uses their own movement limits. For shared dialogue, keep Player 1 nearby and press Square while Player 2 aims at an NPC. Both panes use the game’s native dialogue layout, and Player 2 can see ambient subtitles when the game displays them.</p>
-      <p>The installer includes the mod, UE4SS, and SDL. Per-player inventory requires a separately built OBSE64 backend. Independent loading-door travel, distant NPC simulation, and simultaneous dialogue are still in development.</p>
+      <p>Both controllers use the same walk, run, and sprint controls. Each character uses their own movement limits. Press Square while Player 2 aims at a nearby NPC to open their own dialogue pane. Supported topics play the NPC’s voice and use the game’s dialogue font. Player 2 can see ambient subtitles when the game displays them.</p>
+      <p>The installer and ZIP include the split-screen OBSE64 plugin for separate inventory, voiced dialogue, and Player 2 travel through the Tiber Septim Hotel’s front door while Player 1 remains outside in Talos Plaza. Other loading doors, distant NPC simulation, and quest-changing dialogue are still in development.</p>
       <p>To disable the mod, close the game and set <code>LocalSplitScreen : 0</code> in <code>OblivionRemastered\Binaries\Win64\ue4ss\Mods\mods.txt</code>.</p>
     </section>
   </main>

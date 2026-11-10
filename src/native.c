@@ -144,9 +144,24 @@ static int atomic_write(lua_State *L) {
     if (error) return error_result(L, error);
     lua_pushboolean(L, 1); return 1;
 }
+typedef unsigned int (*backend_version_fn)(void);
+static unsigned int module_protocol(HMODULE module) {
+    backend_version_fn version=module ? (backend_version_fn)GetProcAddress(module,"LSS_BackendVersion") : NULL;
+    return version ? version() : 0;
+}
+static HMODULE backend_module(void) {
+    HMODULE plugin=GetModuleHandleW(L"LocalSplitScreenBackend.dll");
+    if(module_protocol(plugin)==2) return plugin;
+    HMODULE legacy=GetModuleHandleW(L"obse64_1_512_105.dll");
+    return module_protocol(legacy)==1 ? legacy : NULL;
+}
+static int backend_protocol(lua_State *L) {
+    lua_pushinteger(L,module_protocol(backend_module()));
+    return 1;
+}
 static int backend_snapshot(lua_State *L,const char *export_name,const char *unavailable) {
     typedef size_t (__cdecl *copy_fn)(unsigned int,char*,size_t);
-    HMODULE module=GetModuleHandleW(L"obse64_1_512_105.dll");
+    HMODULE module=backend_module();
     copy_fn copy=module ? (copy_fn)GetProcAddress(module,export_name) : NULL;
     if(!copy) { lua_pushnil(L); lua_pushstring(L,unavailable); return 2; }
     unsigned int ref=(unsigned int)luaL_checkinteger(L,1);
@@ -173,7 +188,7 @@ static int backend_dialogue(lua_State *L) {
 }
 static int transform_hold(lua_State *L) {
     typedef bool (*hold_fn)(uintptr_t,bool);
-    HMODULE module=GetModuleHandleW(L"obse64_1_512_105.dll");
+    HMODULE module=backend_module();
     hold_fn hold=module ? (hold_fn)GetProcAddress(module,"LSS_SetTransformHold") : NULL;
     const uintptr_t component=(uintptr_t)luaL_checkinteger(L,1);
     lua_pushboolean(L,hold && hold(component,lua_toboolean(L,2)!=0));
@@ -181,7 +196,7 @@ static int transform_hold(lua_State *L) {
 }
 static int check_transform_landing(lua_State *L) {
     typedef bool (*check_fn)(uintptr_t,double,double,double);
-    HMODULE module=GetModuleHandleW(L"obse64_1_512_105.dll");
+    HMODULE module=backend_module();
     check_fn check=module ? (check_fn)GetProcAddress(module,"LSS_CheckTransformLanding") : NULL;
     const uintptr_t component=(uintptr_t)luaL_checkinteger(L,1);
     const double x=luaL_checknumber(L,2),y=luaL_checknumber(L,3),z=luaL_checknumber(L,4);
@@ -190,7 +205,7 @@ static int check_transform_landing(lua_State *L) {
 }
 static int transform_landing_counts(lua_State *L) {
     typedef void (*count_fn)(unsigned int*,unsigned int*);
-    HMODULE module=GetModuleHandleW(L"obse64_1_512_105.dll");
+    HMODULE module=backend_module();
     count_fn count=module ? (count_fn)GetProcAddress(module,"LSS_TransformLandingCounts") : NULL;
     if(!count) return 0;
     unsigned int accepted,rejected;
@@ -201,7 +216,7 @@ static int transform_landing_counts(lua_State *L) {
 }
 static int control_guest_torch(lua_State *L) {
     typedef bool (*control_fn)(unsigned int);
-    HMODULE module=GetModuleHandleW(L"obse64_1_512_105.dll");
+    HMODULE module=backend_module();
     control_fn control=module ? (control_fn)GetProcAddress(module,"LSS_ControlGuestTorch") : NULL;
     const unsigned int ref=(unsigned int)luaL_checkinteger(L,1);
     lua_pushboolean(L,control && control(ref));
@@ -209,7 +224,7 @@ static int control_guest_torch(lua_State *L) {
 }
 static int null_pairing_count(lua_State *L) {
     typedef bool (*count_fn)(unsigned int*);
-    HMODULE module=GetModuleHandleW(L"obse64_1_512_105.dll");
+    HMODULE module=backend_module();
     count_fn count=module ? (count_fn)GetProcAddress(module,"LSS_NullPairingCount") : NULL;
     unsigned int skipped;
     if(!count || !count(&skipped)) return 0;
@@ -218,7 +233,7 @@ static int null_pairing_count(lua_State *L) {
 }
 static int suppressed_transforms(lua_State *L) {
     typedef unsigned int (*count_fn)(void);
-    HMODULE module=GetModuleHandleW(L"obse64_1_512_105.dll");
+    HMODULE module=backend_module();
     count_fn count=module ? (count_fn)GetProcAddress(module,"LSS_SuppressedTransformCount") : NULL;
     if(!count) return 0;
     lua_pushinteger(L,count());
@@ -270,7 +285,7 @@ __declspec(dllexport) int luaopen_lss_native(lua_State *L) {
     static const luaL_Reg functions[] = {
         {"poll", poll}, {"clock_ms", clock_ms}, {"focused", focused},
         {"key_down", key_down}, {"atomic_write", atomic_write}, {"profile_directory",profile_directory},
-        {"backend_inventory",backend_inventory},
+        {"backend_protocol",backend_protocol}, {"backend_inventory",backend_inventory},
         {"backend_door",backend_door}, {"backend_actor_position",backend_actor_position}, {"backend_dialogue",backend_dialogue},
         {"activation_target_address",activation_target_address},
         {"transform_hold",transform_hold}, {"suppressed_transforms",suppressed_transforms},

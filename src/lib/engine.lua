@@ -89,13 +89,44 @@ function Engine:has_inventory_backend()
     end
     return self.inventory_backend
 end
+local backend_op={LSSDoor="d",LSSPrepareCellFixture="h",LSSDialogue="t",
+    LSSActorPosition="p",LSSInventory="i"}
+local function plugin_command(command)
+    local name,args=command:match("^(LSS%a+)%s+(.+)$")
+    local ref
+    if not name then
+        local target
+        target,name,args=command:match("^(%w+)%.(LSS%a+)%s+(.+)$")
+        ref=target=="player" and 20 or target and tonumber(target,16)
+    end
+    local op=backend_op[name]
+    if not op then return command end
+    if (op=="p" or op=="i") and not ref then return nil end
+    local packet={"LSS2",op}
+    if ref then packet[#packet+1]=("%u"):format(ref) end
+    for arg in args:gmatch("%S+") do
+        local value=math.tointeger(tonumber(arg))
+        if not value or value < -0x80000000 or value > 0xffffffff then return nil end
+        packet[#packet+1]=("%u"):format(value & 0xffffffff)
+    end
+    return 'GetINISetting "'..table.concat(packet,":")..'"'
+end
 function Engine:command(command)
     local host=assert(self:host())
     if not valid(host.CheatManager) then
         host.CheatManager=StaticConstructObject(StaticFindObject("/Script/Altar.AltarCheatManager"),host)
     end
     assert(valid(host.CheatManager),"Oblivion command bridge unavailable")
-    host.CheatManager:SendMultipleOblivionCommand(type(command)=="table" and command or {command})
+    local commands=type(command)=="table" and command or {command}
+    if self.native.backend_protocol and self.native.backend_protocol()==2 then
+        local translated={}
+        for _,entry in ipairs(commands) do
+            local item=plugin_command(entry)
+            if item then translated[#translated+1]=item end
+        end
+        commands=translated
+    end
+    if #commands>0 then host.CheatManager:SendMultipleOblivionCommand(commands) end
 end
 function Engine:campaign()
     local identity=runtime("VAltarSaveIdentificationData")
@@ -304,7 +335,7 @@ function Engine:poll_clone_inventory()
         end
         stage.request=(stage.request+1)%1000000000
         commands[#commands+1]=self.actor_ref..".LSSInventory "..stage.request
-        self:host().CheatManager:SendMultipleOblivionCommand(commands)
+        self:command(commands)
         return "pending"
     end
     local counts={}

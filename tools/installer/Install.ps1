@@ -126,4 +126,4 @@ $writes | Select-Object @{n='path';e={$_.path}},@{n='hash';e={$_.hash}} | Conver
 $mods = if (Test-Path -LiteralPath $list) { [IO.File]::ReadAllText($list) } else { '' }
 $mods = [regex]::Replace($mods, '(?im)^[ \t]*LocalSplitScreen[ \t]*:[^\r\n]*', '')
 [IO.File]::WriteAllText($list, "LocalSplitScreen : 1`r`n" + $mods.TrimStart([char[]]"`r`n"), [Text.UTF8Encoding]::new($false))
-Write-Output 'Installed Local Split Screen. Launch the game normally from Steam.'
+Write-Output 'Installed Local Split Screen. Start the game with obse64_loader.exe for voiced dialogue and supported hotel travel.'

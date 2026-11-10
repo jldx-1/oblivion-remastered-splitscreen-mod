@@ -12,6 +12,10 @@ $scripts = Join-Path $ue 'Mods\LocalSplitScreen\Scripts'
 New-Item -ItemType Directory -Force -Path (Join-Path $scripts 'lib') | Out-Null
 
 $vendor = Join-Path $project 'vendor'
+$plugins = Join-Path $payload 'OBSE\Plugins'
+New-Item -ItemType Directory -Force -Path $plugins | Out-Null
+Copy-Item -LiteralPath "$project\build-obse-plugin\Release\LocalSplitScreenBackend.dll" -Destination $plugins
+Copy-Item -LiteralPath "$project\src\backend\plugin\OBSE64-API-LICENSE.txt" -Destination "$plugins\LocalSplitScreenBackend-LICENSE.txt"
 Copy-Item -LiteralPath "$vendor\ue4ss\dwmapi.dll" -Destination $payload
 Copy-Item -LiteralPath "$vendor\ue4ss\ue4ss\UE4SS.dll","$vendor\ue4ss\ue4ss\LICENSE" -Destination $ue
 $settings = [IO.File]::ReadAllText("$vendor\ue4ss\ue4ss\UE4SS-settings.ini")
